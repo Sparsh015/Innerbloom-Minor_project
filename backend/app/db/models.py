@@ -242,6 +242,34 @@ class SeverityReport(Base):
     )
 
 
+class VideoCall(Base):
+    """Record of every admin-initiated video call. Never stores audio/video content."""
+    __tablename__ = "video_calls"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    caller_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    callee_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # initiated | ringing | accepted | declined | missed | ended | failed
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="initiated")
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    answered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('initiated','ringing','accepted','declined','missed','ended','failed')",
+            name="ck_videocall_status",
+        ),
+        CheckConstraint("caller_id != callee_id", name="ck_videocall_not_self"),
+    )
+
+
 class WellnessResource(Base, TimestampMixin):
     __tablename__ = "wellness_resources"
 

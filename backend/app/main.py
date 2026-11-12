@@ -7,7 +7,7 @@ from app.core.config import get_settings
 from app.db import models  # noqa: F401  (register models)
 from app.db.database import Base, SessionLocal, engine
 from app.core import security
-from app.routers import admin, ai, auth, messages, notifications, reports, social, users, wellness
+from app.routers import admin, ai, auth, calls, messages, notifications, reports, social, users, wellness
 
 settings = get_settings()
 
@@ -41,6 +41,7 @@ app.include_router(notifications.router)
 app.include_router(reports.router)
 app.include_router(admin.router)
 app.include_router(ai.router)
+app.include_router(calls.router)
 
 
 @app.on_event("startup")
