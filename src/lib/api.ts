@@ -372,4 +372,152 @@ export const submitReport = (payload: { concern_level: string; description: stri
     { method: "POST", body: payload }
   );
 
+// ---------- Admin ----------
+export interface AdminStats {
+  total_users: number;
+  active_users: number;
+  total_communities: number;
+  total_posts: number;
+  total_interactions: number;
+  pending_reports: number;
+}
+
+export interface AdminUser {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+  age: number | null;
+  created_at: string;
+}
+
+export interface AdminCommunityMember {
+  user_id: string;
+  name: string;
+  email: string;
+  joined_at: string;
+}
+
+export interface AdminPost {
+  id: string;
+  community_id: string;
+  community_name: string;
+  author_id: string;
+  author_name: string;
+  content: string;
+  created_at: string;
+}
+
+export interface AdminMemberProfile {
+  id: string;
+  name: string;
+  email: string;
+  age: number | null;
+  role: string;
+  created_at: string;
+  bio: string;
+  location: string;
+  interests: string;
+  concerns: string;
+  communities: string[];
+  total_posts: number;
+  total_mood_entries: number;
+  total_activities: number;
+  recent_moods: MoodEntry[];
+  recent_posts: AdminPost[];
+  moderation_reports: number;
+}
+
+export interface ActivityFeedItem {
+  id: string;
+  event_type: string;
+  actor_name: string;
+  actor_id: string;
+  description: string;
+  community_name: string;
+  created_at: string;
+}
+
+export interface MemberInsight {
+  user_id: string;
+  name: string;
+  mood_trend: "improving" | "stable" | "declining" | "insufficient_data";
+  avg_energy: number | null;
+  energy_delta: number | null;
+  participation_trend: string;
+  last_active: string | null;
+  explanation: string;
+  suggested_action: string;
+  data_points: number;
+}
+
+export interface CommunityInsight {
+  community_id: string;
+  community_name: string;
+  member_count: number;
+  post_count_7d: number;
+  post_count_prev_7d: number;
+  engagement_trend: string;
+  pending_reports: number;
+  needs_attention: boolean;
+  explanation: string;
+}
+
+export const adminStats = () => api<AdminStats>("/api/admin/stats");
+export const adminListUsers = () => api<AdminUser[]>("/api/admin/users");
+export const adminReports = () => api<{ id: string; concern_level: string; description: string; status: string; created_at: string }[]>("/api/admin/reports");
+export const adminUpdateReport = (id: string, status: string) =>
+  api<{ id: string }>(`/api/admin/reports/${id}?new_status=${status}`, { method: "PUT" });
+export const adminCommunityMembers = (communityId: string) =>
+  api<AdminCommunityMember[]>(`/api/admin/communities/${communityId}/members`);
+export const adminCommunityPosts = (communityId: string) =>
+  api<AdminPost[]>(`/api/admin/communities/${communityId}/posts`);
+export const adminDeletePost = (communityId: string, postId: string) =>
+  api<{ message: string }>(`/api/admin/communities/${communityId}/posts/${postId}`, { method: "DELETE" });
+export const adminDeleteCommunity = (communityId: string) =>
+  api<{ message: string }>(`/api/admin/communities/${communityId}`, { method: "DELETE" });
+export const adminCreateCommunity = (payload: { name: string; description?: string; category?: string }) =>
+  api<{ id: string; name: string }>("/api/admin/communities", { method: "POST", body: payload });
+export const adminUpdateCommunity = (id: string, payload: { name: string; description?: string; category?: string }) =>
+  api<{ message: string }>(`/api/admin/communities/${id}`, { method: "PUT", body: payload });
+export const adminMemberProfile = (userId: string) =>
+  api<AdminMemberProfile>(`/api/admin/members/${userId}`);
+export const adminActivityFeed = (limit = 50) =>
+  api<ActivityFeedItem[]>(`/api/admin/activity-feed?limit=${limit}`);
+export const adminMemberInsights = () =>
+  api<MemberInsight[]>("/api/admin/insights/members");
+export const adminCommunityInsights = () =>
+  api<CommunityInsight[]>("/api/admin/insights/communities");
+
+// ---------- Video Calls ----------
+export interface VideoCall {
+  id: string;
+  caller_id: string;
+  caller_name: string;
+  callee_id: string;
+  callee_name: string;
+  status: "initiated" | "ringing" | "accepted" | "declined" | "missed" | "ended" | "failed";
+  started_at: string;
+  answered_at: string | null;
+  ended_at: string | null;
+}
+
+export const initiateCall = (calleeId: string) =>
+  api<VideoCall>("/api/calls/initiate", { method: "POST", body: { callee_id: calleeId } });
+
+export const updateCallStatus = (callId: string, newStatus: string) =>
+  api<VideoCall>(`/api/calls/${callId}/status?new_status=${newStatus}`, { method: "PUT" });
+
+export const callHistory = (limit = 50) =>
+  api<VideoCall[]>(`/api/calls/history?limit=${limit}`);
+
+export const adminCallHistory = (limit = 100) =>
+  api<VideoCall[]>(`/api/admin/calls/history?limit=${limit}`);
+
+export function callWebSocketUrl(): string {
+  const token = getToken() ?? "";
+  const wsBase = BASE.replace(/^http/, "ws");
+  return `${wsBase}/ws/call?token=${encodeURIComponent(token)}`;
+}
+
 export { BASE as API_BASE_URL };

@@ -232,3 +232,100 @@ class AdminUserOut(BaseModel):
     role: str
     age: int | None = None
     created_at: datetime
+
+
+class AdminStatsOut(BaseModel):
+    total_users: int
+    active_users: int          # users with at least one mood/activity/post
+    total_communities: int
+    total_posts: int
+    total_interactions: int    # peer connections + messages
+    pending_reports: int
+
+
+class AdminCommunityMemberOut(BaseModel):
+    user_id: str
+    name: str
+    email: str
+    joined_at: datetime
+
+
+class AdminPostOut(BaseModel):
+    id: str
+    community_id: str
+    community_name: str
+    author_id: str
+    author_name: str
+    content: str
+    created_at: datetime
+
+
+class AdminMemberProfileOut(BaseModel):
+    id: str
+    name: str
+    email: str
+    age: int | None = None
+    role: str
+    created_at: datetime
+    bio: str = ""
+    location: str = ""
+    interests: str = ""
+    concerns: str = ""
+    communities: list[str] = []
+    total_posts: int = 0
+    total_mood_entries: int = 0
+    total_activities: int = 0
+    recent_moods: list[MoodOut] = []
+    recent_posts: list["AdminPostOut"] = []
+    moderation_reports: int = 0
+
+
+class ActivityFeedItem(BaseModel):
+    id: str
+    event_type: str            # registration | post | connection | report | moderation
+    actor_name: str
+    actor_id: str
+    description: str
+    community_name: str = ""
+    created_at: datetime
+
+
+class MemberInsight(BaseModel):
+    user_id: str
+    name: str
+    mood_trend: str            # improving | stable | declining | insufficient_data
+    avg_energy: float | None = None
+    energy_delta: float | None = None   # change over last 7 vs prior 7 days
+    participation_trend: str = "insufficient_data"
+    last_active: datetime | None = None
+    explanation: str = ""
+    suggested_action: str = ""
+    data_points: int = 0
+
+
+class CommunityInsightOut(BaseModel):
+    community_id: str
+    community_name: str
+    member_count: int
+    post_count_7d: int
+    post_count_prev_7d: int
+    engagement_trend: str      # increasing | stable | decreasing | insufficient_data
+    pending_reports: int
+    needs_attention: bool
+    explanation: str = ""
+
+# ---------- Video Calls ----------
+class VideoCallOut(BaseModel):
+    id: str
+    caller_id: str
+    caller_name: str
+    callee_id: str
+    callee_name: str
+    status: str
+    started_at: datetime
+    answered_at: datetime | None = None
+    ended_at: datetime | None = None
+
+
+class VideoCallInitiate(BaseModel):
+    callee_id: str = Field(min_length=1, max_length=36)

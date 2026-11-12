@@ -21,6 +21,7 @@ import { PeerMatching } from "@/components/matching/peer-matching";
 import { CommunitiesSection } from "@/components/communities/communities-section";
 import { AdminPanel } from "@/components/admin/admin-panel";
 import { NotificationsPanel } from "@/components/dashboard/notifications-panel";
+import { IncomingCallListener } from "@/components/calls/IncomingCallListener";
 import { HelpSection } from "@/components/support/help-section";
 import { WellnessPage } from "@/components/wellness/wellness-page";
 import { useTheme } from "next-themes";
@@ -576,7 +577,8 @@ const Dashboard = () => {
   return (
     <div className="min-h-screen bg-gradient-soft">
       <Navigation activeTab={activeTab} onTabChange={setActiveTab} />
-      
+      {/* Global incoming call overlay — renders for all logged-in users */}
+      <IncomingCallListener />
       <main className="pt-20 pb-8">
         <div className="container mx-auto px-4 max-w-7xl">
           {renderContent()}
