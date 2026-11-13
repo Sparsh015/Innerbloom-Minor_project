@@ -1,7 +1,8 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Camera, MessageCircle, Activity, Heart, Brain, Zap, Play, Square } from "lucide-react";
+import { CameraCheckIn } from "@/components/camera-check-in/CameraCheckIn";
+import { MessageCircle, Activity, Heart, Brain, Zap } from "lucide-react";
 import { toast } from "sonner";
 import { ChartContainer } from "@/components/ui/chart";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, LineChart, Line, CartesianGrid, ResponsiveContainer } from "recharts";
@@ -18,11 +19,6 @@ import {
 } from "@/lib/api";
 
 export const WellnessPage = () => {
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-
-  const [isRecording, setIsRecording] = useState(false);
-
   // Activity Tracker (real records from PostgreSQL)
   const [activities, setActivities] = useState<{ name: string; date: string }[]>([]);
   const [activityInput, setActivityInput] = useState("");
@@ -92,45 +88,6 @@ export const WellnessPage = () => {
     { sender: "bot", text: "Hi! I'm your wellness companion. How are you feeling today?" }
   ]);
   const [chatInput, setChatInput] = useState("");
-
-  // Start camera preview. Automated analysis is not implemented, so no
-  // fake stress/heart-rate numbers are produced.
-  const startStressDetection = async () => {
-    setIsRecording(true);
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-      streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        videoRef.current.play();
-      }
-      toast.info("Camera preview only — automated stress analysis is not available yet.");
-    } catch (err) {
-      toast.error("Unable to access camera. Please allow camera access.");
-      setIsRecording(false);
-      return;
-    }
-  };
-
-  // Stop camera and analysis
-  const stopRecording = () => {
-    setIsRecording(false);
-    toast.info("Recording stopped");
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
-      streamRef.current = null;
-    }
-  };
-
-  // Clean up camera on unmount
-  useEffect(() => {
-    return () => {
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => track.stop());
-        streamRef.current = null;
-      }
-    };
-  }, []);
 
   const handleAddActivity = async () => {
     if (!activityInput.trim()) return;
@@ -290,54 +247,7 @@ export const WellnessPage = () => {
       </div>
 
       <div className="grid md:grid-cols-2 gap-6">
-        {/* Stress Detection */}
-        <Card className="shadow-soft">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Camera className="w-5 h-5 text-primary" />
-              Camera Check-In
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="text-center p-8 bg-muted/30 rounded-lg">
-              {isRecording ? (
-                <div className="space-y-4 flex flex-col items-center">
-                  <video
-                    ref={videoRef}
-                    className="w-32 h-32 rounded-lg border border-primary mx-auto bg-black"
-                    autoPlay
-                    playsInline
-                    muted
-                  />
-                  <p className="text-sm text-muted-foreground">Camera preview — no automated analysis.</p>
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  <Camera className="w-16 h-16 mx-auto text-muted-foreground" />
-                  <p className="text-sm text-muted-foreground">Camera preview (analysis not available)</p>
-                </div>
-              )}
-            </div>
-
-            <Button 
-              onClick={isRecording ? stopRecording : startStressDetection}
-              className="w-full"
-              variant={isRecording ? "destructive" : "default"}
-            >
-              {isRecording ? (
-                <>
-                  <Square className="w-4 h-4 mr-2" />
-                  Stop Camera
-                </>
-              ) : (
-                <>
-                  <Play className="w-4 h-4 mr-2" />
-                  Start Camera
-                </>
-              )}
-            </Button>
-          </CardContent>
-        </Card>
+        <CameraCheckIn />
 
         {/* Health Chatbot */}
         <Card className="shadow-soft">
