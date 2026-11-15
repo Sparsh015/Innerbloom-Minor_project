@@ -1,10 +1,10 @@
-import { Heart, Users, Calendar, MessageCircle, HelpCircle, Activity, User, LogOut, ShieldAlert } from "lucide-react";
+import { Heart, Users, Calendar, MessageCircle, HelpCircle, Activity, User, LogOut } from "lucide-react";
 import { Button } from "./button";
 import { cn } from "@/lib/utils";
 import { useNavigate } from "react-router-dom";
 import icon from "@/assets/icon.png";
 import { MessageSquare } from "lucide-react";
-import { currentUser, logout } from "@/lib/api";
+import { logout } from "@/lib/api";
 
 interface NavigationProps {
   activeTab: string;
@@ -23,10 +23,7 @@ const navigationItems = [
 
 export function Navigation({ activeTab, onTabChange }: NavigationProps) {
   const navigate = useNavigate();
-  const isAdmin = currentUser()?.role === "admin";
-  const items = isAdmin
-    ? [...navigationItems, { id: 'admin', label: 'Admin', icon: ShieldAlert }]
-    : navigationItems;
+  const items = navigationItems;
   
   const handleLogout = () => {
     // Clear real authentication state, then leave the protected area.

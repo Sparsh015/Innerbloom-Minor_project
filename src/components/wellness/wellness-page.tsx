@@ -2,11 +2,11 @@ import { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { CameraCheckIn } from "@/components/camera-check-in/CameraCheckIn";
-import { MessageCircle, Activity, Heart, Brain, Zap } from "lucide-react";
+import { WellnessChatCard } from "@/components/wellness/WellnessChatCard";
+import { Activity, Heart, Zap } from "lucide-react";
 import { toast } from "sonner";
 import { ChartContainer } from "@/components/ui/chart";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, LineChart, Line, CartesianGrid, ResponsiveContainer } from "recharts";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import dayjs from 'dayjs';
 import {
   createActivity,
@@ -82,12 +82,6 @@ export const WellnessPage = () => {
       cancelled = true;
     };
   }, []);
-
-  const [chatbotOpen, setChatbotOpen] = useState(false);
-  const [chatMessages, setChatMessages] = useState([
-    { sender: "bot", text: "Hi! I'm your wellness companion. How are you feeling today?" }
-  ]);
-  const [chatInput, setChatInput] = useState("");
 
   const handleAddActivity = async () => {
     if (!activityInput.trim()) return;
@@ -168,30 +162,6 @@ export const WellnessPage = () => {
     setJournalSaving(false);
   };
 
-  const handleSendChat = () => {
-    if (!chatInput.trim()) return;
-    const userMsg = { sender: "user", text: chatInput };
-    setChatMessages((msgs) => [...msgs, userMsg]);
-    setChatInput("");
-    // Simulate AI response
-    setTimeout(() => {
-      const lower = chatInput.toLowerCase();
-      let reply = "I'm here to support you. Can you tell me more?";
-      if (lower.includes("stress") || lower.includes("anxious") || lower.includes("overwhelmed")) {
-        reply = "I'm sorry you're feeling stressed. Try taking a few deep breaths. Would you like a tip for stress relief?";
-      } else if (lower.includes("sad") || lower.includes("down") || lower.includes("depressed")) {
-        reply = "It's okay to feel sad sometimes. Remember, you're not alone. Would you like a mood-boosting activity suggestion?";
-      } else if (lower.includes("happy") || lower.includes("good") || lower.includes("great")) {
-        reply = "That's wonderful to hear! Keep up the positive energy. Would you like a wellness tip to maintain your mood?";
-      } else if (lower.includes("tip") || lower.includes("yes")) {
-        reply = "Here's a tip: Take a 5-minute mindful break. Close your eyes, breathe deeply, and focus on the present moment.";
-      } else if (lower.includes("thank")) {
-        reply = "You're welcome! I'm always here if you need to talk or need more tips.";
-      }
-      setChatMessages((msgs) => [...msgs, { sender: "bot", text: reply }]);
-    }, 800);
-  };
-
   // Chart data for last 7 days
   const getLast7Days = () => {
     const days = [];
@@ -249,58 +219,7 @@ export const WellnessPage = () => {
       <div className="grid md:grid-cols-2 gap-6">
         <CameraCheckIn />
 
-        {/* Health Chatbot */}
-        <Card className="shadow-soft">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Brain className="w-5 h-5 text-primary" />
-              Health Chatbot
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="bg-primary/5 p-4 rounded-lg">
-              <div className="flex items-start gap-3">
-                <div className="w-8 h-8 bg-primary/20 rounded-full flex items-center justify-center">
-                  <MessageCircle className="w-4 h-4 text-primary" />
-                </div>
-                <div className="flex-1">
-                  <p className="text-sm text-foreground">
-                    Hi! I'm your wellness companion. I can help you with stress management, 
-                    mood tracking, and personalized wellness tips. How are you feeling today?
-                  </p>
-                </div>
-              </div>
-            </div>
-            <Button className="w-full" variant="outline" onClick={() => setChatbotOpen(true)}>
-              <MessageCircle className="w-4 h-4 mr-2" />
-              Start Wellness Chat
-            </Button>
-            <Dialog open={chatbotOpen} onOpenChange={setChatbotOpen}>
-              <DialogContent className="max-w-md w-full">
-                <DialogHeader>
-                  <DialogTitle>Wellness Chatbot</DialogTitle>
-                </DialogHeader>
-                <div className="flex flex-col gap-2 max-h-64 overflow-y-auto mb-2 p-2 bg-muted/30 rounded">
-                  {chatMessages.map((msg, i) => (
-                    <div key={i} className={`text-sm px-2 py-1 rounded-lg max-w-[80%] ${msg.sender === "user" ? "bg-primary/10 self-end text-right" : "bg-white self-start"}`}>
-                      {msg.text}
-                    </div>
-                  ))}
-                </div>
-                <form className="flex gap-2" onSubmit={e => { e.preventDefault(); handleSendChat(); }}>
-                  <input
-                    className="flex-1 border rounded px-2 py-1"
-                    placeholder="Type your message..."
-                    value={chatInput}
-                    onChange={e => setChatInput(e.target.value)}
-                    autoFocus
-                  />
-                  <Button type="submit" size="sm">Send</Button>
-                </form>
-              </DialogContent>
-            </Dialog>
-          </CardContent>
-        </Card>
+        <WellnessChatCard />
       </div>
 
       {/* Additional Wellness Features */}
@@ -360,7 +279,7 @@ export const WellnessPage = () => {
                   <YAxis domain={[0, 10]} width={24} />
                   <Tooltip formatter={(v, n, p) => {
                     // Try to get dataIndex from p (payload)
-                    const dataIndex = (p && ('dataIndex' in p)) ? (p as any).dataIndex : undefined;
+                    const dataIndex = (p && ('dataIndex' in p)) ? (p as { dataIndex?: number }).dataIndex : undefined;
                     if (n === 'score' && typeof dataIndex === 'number' && moodChartData[dataIndex] && moodChartData[dataIndex].mood) {
                       return `${v} (${moodChartData[dataIndex].mood})`;
                     }

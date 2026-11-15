@@ -1,22 +1,25 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ScanFace } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
+import { Switch } from "@/components/ui/switch";
+import { useFacialAutoCheck } from "@/components/facial-auto-check/facialAutoCheckContext";
+import {
+  clearFacialCheckIns,
+  createFacialCheckIn,
+  facialCheckInHistory,
+  type FacialCheckInEntry,
+} from "@/lib/api";
 import { CameraControls } from "./CameraControls";
 import { CameraPreview } from "./CameraPreview";
 import { ExpressionResult } from "./ExpressionResult";
 import { useCamera } from "./hooks/useCamera";
-import {
-  classifyExpression,
-  isExpressionModelLoaded,
-  loadExpressionModel,
-} from "./services/expressionClassifier";
 import { detectFaces, getFaceLandmarker } from "./services/faceLandmarker";
+import { analyzeFacialFrame } from "./services/facialAnalysis";
 import {
-  assessImageQuality,
   computeLandmarkBox,
-  cropFaceToGrayscale,
   isFacePartial,
   isFaceTooSmall,
 } from "./services/imagePreprocessing";
@@ -27,13 +30,18 @@ import type {
   FaceStatus,
   ReflectionChoice,
 } from "./types/expression";
-import { buildAnalysis } from "./utils/expressionMapping";
 
 const FACE_CHECK_INTERVAL_MS = 1000;
 const MIN_FACE_RATIO = 0.18;
 
 const DISCLAIMER =
   "AI-estimated facial expressions may not reflect how you actually feel. Facial-expression analysis is not a medical or psychological assessment. You can always select your actual mood yourself.";
+
+function formatCountdown(totalSeconds: number): string {
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
 
 function describeFaceStatus(status: FaceStatus): string {
   switch (status) {
@@ -65,6 +73,16 @@ export function CameraCheckIn() {
     stopCamera,
     captureFrame,
   } = useCamera();
+  const {
+    enabled: autoCheckEnabled,
+    status: autoCheckStatus,
+    remainingSeconds,
+    lastResult: lastAutoResult,
+    lastError: lastAutoError,
+    enable: enableAutoCheck,
+    disable: disableAutoCheck,
+    setManualCameraActive,
+  } = useFacialAutoCheck();
 
   const [phase, setPhase] = useState<AnalysisPhase>("idle");
   const [faceStatus, setFaceStatus] = useState<FaceStatus>("unknown");
@@ -74,10 +92,27 @@ export function CameraCheckIn() {
   const [modelProgress, setModelProgress] = useState<number | null>(null);
   const [reflection, setReflection] = useState<ReflectionChoice>("unset");
   const [selfMood, setSelfMood] = useState("");
+  const [history, setHistory] = useState<FacialCheckInEntry[]>([]);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const busyRef = useRef(false);
   const mountedRef = useRef(true);
   const runIdRef = useRef(0);
+
+  const refreshHistory = useCallback(async () => {
+    try {
+      const rows = await facialCheckInHistory(10);
+      if (mountedRef.current) {
+        setHistory(rows);
+      }
+    } catch {
+      /* history is optional; keep the UI usable offline */
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshHistory();
+  }, [refreshHistory]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -86,6 +121,11 @@ export function CameraCheckIn() {
       runIdRef.current += 1;
     };
   }, []);
+
+  useEffect(() => {
+    setManualCameraActive(cameraStatus === "active");
+    return () => setManualCameraActive(false);
+  }, [cameraStatus, setManualCameraActive]);
 
   useEffect(() => {
     if (cameraStatus !== "active") {
@@ -290,108 +330,73 @@ export function CameraCheckIn() {
         return;
       }
 
-      const detection = await detectFaces(canvas);
-      if (!mountedRef.current || runIdRef.current !== runId) {
-        return;
-      }
-
-      if (detection.count === 0) {
-        setFaceStatus("no-face");
-        setPhase("error");
-        setErrorMessage(
-          "No face detected. Please position your face clearly inside the camera frame.",
-        );
-        return;
-      }
-
-      if (detection.count > 1) {
-        setFaceStatus("multiple-faces");
-        setPhase("error");
-        setErrorMessage(
-          "Please ensure only one face is visible in the camera.",
-        );
-        return;
-      }
-
-      const landmarks = detection.landmarks[0];
-      if (!landmarks) {
-        setPhase("error");
-        setErrorMessage(
-          "No face detected. Please position your face clearly inside the camera frame.",
-        );
-        return;
-      }
-
-      const frameWidth = canvas.width;
-      const frameHeight = canvas.height;
-      const box = computeLandmarkBox(landmarks, frameWidth, frameHeight);
-
-      if (isFaceTooSmall(box, frameWidth, frameHeight, MIN_FACE_RATIO)) {
-        setFaceStatus("too-small");
-        setPhase("error");
-        setErrorMessage(
-          "Move a little closer so your face fills more of the camera frame.",
-        );
-        return;
-      }
-
-      if (isFacePartial(landmarks, frameWidth, frameHeight)) {
-        setFaceStatus("partial");
-        setPhase("error");
-        setErrorMessage(
-          "Center your full face inside the camera frame and try again.",
-        );
-        return;
-      }
-
-      setFaceStatus("one-face");
-
-      const grayscale = cropFaceToGrayscale(canvas, box);
-      const quality = assessImageQuality(grayscale);
-
-      if (!quality.brightnessOk || !quality.blurOk) {
-        const issues: string[] = [];
-        if (!quality.brightnessOk) {
-          issues.push("the lighting looks uneven");
-        }
-        if (!quality.blurOk) {
-          issues.push("the image looks a little blurry");
-        }
-        setQualityWarning(
-          `For a better result, make sure your face is well lit and in focus — ${issues.join(
-            " and ",
-          )}.`,
-        );
-      }
-
-      if (isExpressionModelLoaded()) {
-        setPhase("analyzing");
-      } else {
-        setPhase("model-loading");
-        setModelProgress(0);
-      }
-
-      await loadExpressionModel((progress) => {
-        if (mountedRef.current && runIdRef.current === runId) {
-          setModelProgress(progress);
-        }
+      const outcome = await analyzeFacialFrame(canvas, {
+        shouldCancel: () =>
+          !mountedRef.current || runIdRef.current !== runId,
+        onFaceStatus: setFaceStatus,
+        onPhase: (stage) => {
+          if (!mountedRef.current || runIdRef.current !== runId) {
+            return;
+          }
+          if (stage === "model-loading") {
+            setPhase("model-loading");
+            setModelProgress(0);
+          } else {
+            setPhase("analyzing");
+            setModelProgress(null);
+          }
+        },
+        onModelProgress: (progress) => {
+          if (mountedRef.current && runIdRef.current === runId) {
+            setModelProgress(progress);
+          }
+        },
       });
 
-      if (!mountedRef.current || runIdRef.current !== runId) {
+      if (
+        !mountedRef.current ||
+        runIdRef.current !== runId ||
+        outcome.status === "cancelled"
+      ) {
         return;
       }
 
-      setPhase("analyzing");
-      setModelProgress(null);
+      setQualityWarning(outcome.qualityWarning);
 
-      const logits = await classifyExpression(grayscale);
-      if (!mountedRef.current || runIdRef.current !== runId) {
+      if (outcome.status === "failed") {
+        setPhase("error");
+        setErrorMessage(outcome.message);
         return;
       }
 
-      const result = buildAnalysis(logits);
-      setAnalysis(result);
-      setPhase(result.status === "success" ? "success" : "low-confidence");
+      if (outcome.analysis) {
+        setAnalysis(outcome.analysis);
+        setPhase(
+          outcome.status === "success" ? "success" : "low-confidence",
+        );
+
+        if (outcome.status === "success") {
+          try {
+            const saved = await createFacialCheckIn({
+              expression: outcome.analysis.key,
+              confidence: outcome.analysis.confidence,
+              source: "manual",
+            });
+            if (mountedRef.current && runIdRef.current === runId) {
+              setSaveError(null);
+              setHistory((prev) => [saved, ...prev].slice(0, 10));
+            }
+          } catch (saveFailure) {
+            if (mountedRef.current && runIdRef.current === runId) {
+              setSaveError(
+                saveFailure instanceof Error
+                  ? saveFailure.message
+                  : "This check-in could not be saved.",
+              );
+            }
+          }
+        }
+      }
     } catch (error) {
       if (!mountedRef.current || runIdRef.current !== runId) {
         return;
@@ -421,6 +426,24 @@ export function CameraCheckIn() {
     }
   };
 
+  const handleClearHistory = async () => {
+    try {
+      await clearFacialCheckIns();
+      if (mountedRef.current) {
+        setHistory([]);
+        setSaveError(null);
+      }
+    } catch (error) {
+      if (mountedRef.current) {
+        setSaveError(
+          error instanceof Error
+            ? error.message
+            : "Could not clear your check-in history.",
+        );
+      }
+    }
+  };
+
   return (
     <Card className="shadow-soft">
       <CardHeader>
@@ -435,9 +458,65 @@ export function CameraCheckIn() {
             AI-Powered Facial Expression Analysis
           </p>
           <p className="text-xs text-muted-foreground">
-            Everything runs locally on your device. No photos or video are
-            uploaded or stored.
+            Facial images and video stay on your device. When automatic
+            check-ins are on, only AI-estimated mood and stress results are
+            saved for your admin.
           </p>
+        </div>
+
+        <div className="space-y-2 rounded-lg border bg-muted/20 p-3">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-sm font-medium">Automatic check-ins</p>
+              <p className="text-xs text-muted-foreground">
+                Use the camera briefly about every 10 minutes while you are
+                signed in.
+              </p>
+            </div>
+            <Switch
+              checked={autoCheckEnabled}
+              onCheckedChange={(checked) => {
+                if (checked) {
+                  void enableAutoCheck();
+                } else {
+                  disableAutoCheck();
+                }
+              }}
+              disabled={autoCheckStatus === "requesting"}
+              aria-label="Enable automatic facial check-ins"
+            />
+          </div>
+
+          {autoCheckStatus !== "off" && (
+            <div className="space-y-1 text-xs text-muted-foreground">
+              {autoCheckStatus === "requesting" && (
+                <p>Requesting camera permission…</p>
+              )}
+              {autoCheckStatus === "running" && <p>Checking now…</p>}
+              {autoCheckStatus === "saving" && <p>Saving result…</p>}
+              {autoCheckStatus === "waiting" && remainingSeconds !== null && (
+                <p>Next check in {formatCountdown(remainingSeconds)}</p>
+              )}
+              {autoCheckStatus === "error" && remainingSeconds !== null && (
+                <p className="text-destructive">
+                  Retrying in {formatCountdown(remainingSeconds)}
+                </p>
+              )}
+              {lastAutoError && (
+                <p className="text-amber-600 dark:text-amber-400">
+                  {lastAutoError}
+                </p>
+              )}
+              {lastAutoResult && (
+                <p>
+                  Last saved: {lastAutoResult.mood} ·{" "}
+                  {lastAutoResult.expression_label} ·{" "}
+                  {Math.round(lastAutoResult.confidence * 100)}% · stress{" "}
+                  {lastAutoResult.stress_level}/5
+                </p>
+              )}
+            </div>
+          )}
         </div>
 
         <CameraPreview
@@ -484,6 +563,12 @@ export function CameraCheckIn() {
           <p className="text-sm text-destructive">{errorMessage}</p>
         )}
 
+        {saveError && (
+          <p className="text-xs text-amber-600 dark:text-amber-400">
+            {saveError}
+          </p>
+        )}
+
         <CameraControls
           cameraStatus={cameraStatus}
           phase={phase}
@@ -504,6 +589,39 @@ export function CameraCheckIn() {
         />
 
         <p className="text-xs text-muted-foreground">{DISCLAIMER}</p>
+
+        {history.length > 0 && (
+          <div className="space-y-2 rounded-lg border bg-muted/20 p-3">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-sm font-medium">Recent check-ins</p>
+              <Button variant="ghost" size="sm" onClick={() => void handleClearHistory()}>
+                Clear
+              </Button>
+            </div>
+            <div className="max-h-40 space-y-1 overflow-y-auto">
+              {history.map((entry) => (
+                <div
+                  key={entry.id}
+                  className="flex items-center justify-between gap-2 rounded border bg-background/60 p-2 text-xs"
+                >
+                  <div className="min-w-0">
+                    <span className="font-medium text-foreground">{entry.mood}</span>
+                    <span className="text-muted-foreground">
+                      {" "}
+                      · {entry.expression_label}
+                      {entry.source === "manual" ? " · manual" : " · auto"}
+                    </span>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2 text-muted-foreground">
+                    <Badge variant="outline">Stress {entry.stress_level}/5</Badge>
+                    <span>{Math.round(entry.confidence * 100)}%</span>
+                    <span>{new Date(entry.created_at).toLocaleString()}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </CardContent>
     </Card>
   );

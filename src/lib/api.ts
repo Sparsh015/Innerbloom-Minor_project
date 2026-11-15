@@ -175,6 +175,14 @@ export function isLoggedIn(): boolean {
   return getToken() !== null;
 }
 
+export function cacheCurrentUser(user: AuthUser) {
+  try {
+    localStorage.setItem("innerbloom_user", JSON.stringify(user));
+  } catch {
+    /* storage unavailable */
+  }
+}
+
 // ---------- Profile ----------
 export interface Profile {
   concerns: string;
@@ -208,6 +216,25 @@ export interface MoodEntry {
   note: string;
   entry_date: string;
   entry_time: string;
+  created_at: string;
+}
+
+export interface FacialCheckInEntry {
+  id: string;
+  expression:
+    | "neutral"
+    | "happiness"
+    | "surprise"
+    | "sadness"
+    | "anger"
+    | "disgust"
+    | "fear"
+    | "contempt";
+  expression_label: string;
+  confidence: number;
+  stress_level: number;
+  mood: string;
+  source: string;
   created_at: string;
 }
 
@@ -247,6 +274,31 @@ export const createMood = (payload: {
 export const moodHistory = (limit = 100) =>
   api<MoodEntry[]>(`/api/mood/history?limit=${limit}`);
 
+export const createFacialCheckIn = (payload: {
+  expression: FacialCheckInEntry["expression"];
+  confidence: number;
+  source?: "auto" | "manual";
+}) => api<FacialCheckInEntry>("/api/facial-check-ins", { method: "POST", body: payload });
+
+export const facialCheckInHistory = (limit = 100) =>
+  api<FacialCheckInEntry[]>(`/api/facial-check-ins?limit=${limit}`);
+
+export const clearFacialCheckIns = () =>
+  api<void>("/api/facial-check-ins", { method: "DELETE" });
+
+export interface FacialAutoCheckSettings {
+  enabled: boolean;
+}
+
+export const getFacialAutoCheckSettings = () =>
+  api<FacialAutoCheckSettings>("/api/facial-check-ins/settings");
+
+export const updateFacialAutoCheckSettings = (enabled: boolean) =>
+  api<FacialAutoCheckSettings>("/api/facial-check-ins/settings", {
+    method: "PUT",
+    body: { enabled },
+  });
+
 export const createActivity = (payload: {
   title: string;
   activity_type?: string;
@@ -258,6 +310,33 @@ export const createActivity = (payload: {
 
 export const listActivities = (limit = 100) =>
   api<ActivityEntry[]>(`/api/activities?limit=${limit}`);
+
+// ---------- AI wellness chat ----------
+export interface WellnessChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  crisis: boolean;
+  created_at: string;
+}
+
+export interface WellnessChatResponse {
+  message: WellnessChatMessage;
+  crisis: boolean;
+  resources: string[];
+}
+
+export const sendWellnessChat = (message: string) =>
+  api<WellnessChatResponse>("/api/ai/wellness", {
+    method: "POST",
+    body: { message },
+  });
+
+export const wellnessChatHistory = (limit = 50) =>
+  api<WellnessChatMessage[]>(`/api/ai/wellness/history?limit=${limit}`);
+
+export const clearWellnessChatHistory = () =>
+  api<void>("/api/ai/wellness/history", { method: "DELETE" });
 
 // ---------- Journal ----------
 export interface JournalEntry {
@@ -365,12 +444,44 @@ export const listNotifications = () => api<Notification[]>("/api/notifications")
 export const markNotificationRead = (id: string) =>
   api<Notification>(`/api/notifications/${id}/read`, { method: "PUT" });
 
-// ---------- Reports ----------
-export const submitReport = (payload: { concern_level: string; description: string }) =>
-  api<{ id: string; concern_level: string; description: string; status: string; created_at: string }>(
-    "/api/reports/severity",
-    { method: "POST", body: payload }
-  );
+// ---------- Reports / support requests ----------
+export interface SupportRequest {
+  id: string;
+  request_type: "support" | "activity" | "technical";
+  concern_level: "low" | "medium" | "high" | "urgent";
+  title: string;
+  category: string;
+  description: string;
+  preferred_date: string;
+  preferred_time: string;
+  duration_minutes: number | null;
+  location_pref: string;
+  notes: string;
+  admin_response: string;
+  status: "open" | "reviewed" | "resolved";
+  created_at: string;
+  updated_at: string | null;
+  reporter_name?: string | null;
+  reporter_email?: string | null;
+}
+
+export type SupportRequestInput = {
+  request_type?: SupportRequest["request_type"];
+  concern_level?: SupportRequest["concern_level"];
+  title?: string;
+  category?: string;
+  description: string;
+  preferred_date?: string;
+  preferred_time?: string;
+  duration_minutes?: number | null;
+  location_pref?: string;
+  notes?: string;
+};
+
+export const submitReport = (payload: SupportRequestInput) =>
+  api<SupportRequest>("/api/reports/severity", { method: "POST", body: payload });
+
+export const myReports = () => api<SupportRequest[]>("/api/reports/mine");
 
 // ---------- Admin ----------
 export interface AdminStats {
@@ -380,6 +491,10 @@ export interface AdminStats {
   total_posts: number;
   total_interactions: number;
   pending_reports: number;
+  pending_support_requests: number;
+  pending_activity_requests: number;
+  pending_technical_reports: number;
+  total_facial_check_ins: number;
 }
 
 export interface AdminUser {
@@ -423,7 +538,10 @@ export interface AdminMemberProfile {
   total_posts: number;
   total_mood_entries: number;
   total_activities: number;
+  total_facial_check_ins: number;
+  auto_check_enabled: boolean;
   recent_moods: MoodEntry[];
+  recent_facial_check_ins: FacialCheckInEntry[];
   recent_posts: AdminPost[];
   moderation_reports: number;
 }
@@ -465,9 +583,12 @@ export interface CommunityInsight {
 
 export const adminStats = () => api<AdminStats>("/api/admin/stats");
 export const adminListUsers = () => api<AdminUser[]>("/api/admin/users");
-export const adminReports = () => api<{ id: string; concern_level: string; description: string; status: string; created_at: string }[]>("/api/admin/reports");
-export const adminUpdateReport = (id: string, status: string) =>
-  api<{ id: string }>(`/api/admin/reports/${id}?new_status=${status}`, { method: "PUT" });
+export const adminReports = () => api<SupportRequest[]>("/api/admin/reports");
+export const adminUpdateReport = (id: string, status: string, response?: string) => {
+  const params = new URLSearchParams({ new_status: status });
+  if (response !== undefined) params.set("response", response);
+  return api<SupportRequest>(`/api/admin/reports/${id}?${params.toString()}`, { method: "PUT" });
+};
 export const adminCommunityMembers = (communityId: string) =>
   api<AdminCommunityMember[]>(`/api/admin/communities/${communityId}/members`);
 export const adminCommunityPosts = (communityId: string) =>

@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisco
 from sqlalchemy.orm import Session
 
 from app import schemas
-from app.core.dependencies import get_current_user
+from app.core.dependencies import require_user
 from app.core.security import decode_token
 from app.db import models
 from app.db.database import SessionLocal, get_db
@@ -26,7 +26,7 @@ def _authorized(db: Session, me: str, other: str) -> bool:
 @router.post("/api/messages", response_model=schemas.MessageOut,
              status_code=status.HTTP_201_CREATED, summary="Send a private message")
 async def send_message(payload: schemas.MessageCreate,
-                       current: models.User = Depends(get_current_user),
+                       current: models.User = Depends(require_user),
                        db: Session = Depends(get_db)):
     if payload.recipient_id == current.id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
@@ -51,7 +51,7 @@ async def send_message(payload: schemas.MessageCreate,
 
 @router.get("/api/conversations", response_model=list[schemas.ConversationOut],
             summary="My conversations (real peers, last message, unread count)")
-def list_conversations(current: models.User = Depends(get_current_user),
+def list_conversations(current: models.User = Depends(require_user),
                        db: Session = Depends(get_db)):
     rows = (db.query(models.Message)
             .filter((models.Message.sender_id == current.id) |
@@ -75,12 +75,36 @@ def list_conversations(current: models.User = Depends(get_current_user),
             user_id=peer.id, name=peer.name,
             last_message=m.content, last_at=m.created_at,
             unread_count=entry["unread"]))
+
+    # Every connection is a chat, even before the first message, so peers do not
+    # vanish from the Chats tab after connecting in Find Peers.
+    connections = (db.query(models.PeerConnection)
+                   .filter(((models.PeerConnection.requester_id == current.id) |
+                            (models.PeerConnection.peer_id == current.id)) &
+                           (models.PeerConnection.status == "connected"))
+                   .all())
+    connected: dict[str, models.PeerConnection] = {}
+    for c in connections:
+        peer_id = c.peer_id if c.requester_id == current.id else c.requester_id
+        if peer_id not in connected or c.created_at > connected[peer_id].created_at:
+            connected[peer_id] = c
+    existing_ids = {c.user_id for c in out}
+    for peer_id, conn in connected.items():
+        if peer_id in existing_ids:
+            continue
+        peer = db.query(models.User).filter_by(id=peer_id).first()
+        if peer is None:
+            continue
+        out.append(schemas.ConversationOut(
+            user_id=peer.id, name=peer.name,
+            last_message="", last_at=conn.created_at, unread_count=0))
+    out.sort(key=lambda c: c.last_at, reverse=True)
     return out
 
 
 @router.get("/api/messages/{user_id}", response_model=list[schemas.MessageOut],
             summary="My conversation with another user")
-def get_conversation(user_id: str, current: models.User = Depends(get_current_user),
+def get_conversation(user_id: str, current: models.User = Depends(require_user),
                      db: Session = Depends(get_db)):
     if user_id == current.id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,

@@ -16,6 +16,19 @@ interface SignupModalProps {
   onOpenChange: (open: boolean) => void;
 }
 
+function validatePassword(password: string): string | null {
+  if (password.length < 8) {
+    return "Password must be at least 8 characters.";
+  }
+  if (!/\d/.test(password)) {
+    return "Password must include at least one number.";
+  }
+  if (!/[a-zA-Z]/.test(password)) {
+    return "Password must include at least one letter.";
+  }
+  return null;
+}
+
 export const SignupModal = ({ open, onOpenChange }: SignupModalProps) => {
   const [step, setStep] = useState(1);
   const [formData, setFormData] = useState({
@@ -29,10 +42,17 @@ export const SignupModal = ({ open, onOpenChange }: SignupModalProps) => {
     interests: ""
   });
   const [loading, setLoading] = useState(false);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
   const navigate = useNavigate();
 
   const handleNext = (e: React.FormEvent) => {
     e.preventDefault();
+    const passwordIssue = validatePassword(formData.password);
+    setPasswordError(passwordIssue);
+    if (passwordIssue) {
+      toast.error(passwordIssue);
+      return;
+    }
     if (formData.name && formData.age && formData.email && formData.password) {
       setStep(2);
     }
@@ -164,12 +184,21 @@ export const SignupModal = ({ open, onOpenChange }: SignupModalProps) => {
                       type="password"
                       placeholder="Create a secure password (min 8 characters, letters + digits)"
                       value={formData.password}
-                      onChange={(e) => setFormData({...formData, password: e.target.value})}
+                      onChange={(e) => {
+                        const password = e.target.value;
+                        setFormData({...formData, password});
+                        if (passwordError) {
+                          setPasswordError(validatePassword(password));
+                        }
+                      }}
                       className="pl-10"
                       required
                       minLength={8}
                     />
                   </div>
+                  {passwordError && (
+                    <p className="text-xs text-destructive">{passwordError}</p>
+                  )}
                 </div>
 
                 <Button type="submit" className="w-full bg-primary hover:bg-primary/90 text-foreground">

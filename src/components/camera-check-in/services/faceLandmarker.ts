@@ -9,6 +9,7 @@ const MEDIAPIPE_WASM_PATH = "/mediapipe/wasm";
 const FACE_MODEL_PATH = "/models/face_landmarker.task";
 
 let landmarkerPromise: Promise<FaceLandmarker> | null = null;
+let usingCpuFallback = false;
 
 function buildOptions(delegate: "CPU" | "GPU"): FaceLandmarkerOptions {
   return {
@@ -26,19 +27,27 @@ function buildOptions(delegate: "CPU" | "GPU"): FaceLandmarkerOptions {
   };
 }
 
-async function createFaceLandmarker(): Promise<FaceLandmarker> {
+async function createFaceLandmarker(
+  delegate: "CPU" | "GPU",
+): Promise<FaceLandmarker> {
   const fileset = await FilesetResolver.forVisionTasks(MEDIAPIPE_WASM_PATH);
-
-  try {
-    return await FaceLandmarker.createFromOptions(fileset, buildOptions("GPU"));
-  } catch {
-    return await FaceLandmarker.createFromOptions(fileset, buildOptions("CPU"));
-  }
+  return FaceLandmarker.createFromOptions(fileset, buildOptions(delegate));
 }
 
 export function getFaceLandmarker(): Promise<FaceLandmarker> {
   if (!landmarkerPromise) {
-    landmarkerPromise = createFaceLandmarker().catch((error) => {
+    landmarkerPromise = (async () => {
+      if (usingCpuFallback) {
+        return createFaceLandmarker("CPU");
+      }
+
+      try {
+        return await createFaceLandmarker("GPU");
+      } catch {
+        usingCpuFallback = true;
+        return createFaceLandmarker("CPU");
+      }
+    })().catch((error) => {
       landmarkerPromise = null;
       throw error;
     });
@@ -47,10 +56,10 @@ export function getFaceLandmarker(): Promise<FaceLandmarker> {
   return landmarkerPromise;
 }
 
-export async function detectFaces(
+function runDetection(
+  landmarker: FaceLandmarker,
   source: HTMLCanvasElement | HTMLVideoElement | ImageBitmap,
-): Promise<FaceDetectionResult> {
-  const landmarker = await getFaceLandmarker();
+): FaceDetectionResult {
   const result = landmarker.detect(source);
 
   const landmarks = result.faceLandmarks.map((face) =>
@@ -69,4 +78,23 @@ export async function detectFaces(
     landmarks,
     blendshapes,
   };
+}
+
+export async function detectFaces(
+  source: HTMLCanvasElement | HTMLVideoElement | ImageBitmap,
+): Promise<FaceDetectionResult> {
+  const landmarker = await getFaceLandmarker();
+
+  try {
+    return runDetection(landmarker, source);
+  } catch (error) {
+    if (usingCpuFallback) {
+      throw error;
+    }
+
+    usingCpuFallback = true;
+    landmarkerPromise = null;
+    const fallback = await getFaceLandmarker();
+    return runDetection(fallback, source);
+  }
 }

@@ -47,8 +47,41 @@ app.include_router(calls.router)
 @app.on_event("startup")
 def on_startup() -> None:
     Base.metadata.create_all(bind=engine)
+    _ensure_report_columns()
     _ensure_admin()
     _ensure_seed_communities()
+
+
+# Columns added to the original severity_reports table after its first release.
+# create_all() never alters existing tables, so add them in place for both
+# SQLite (local dev) and PostgreSQL (Supabase) while keeping existing rows.
+_REPORT_COLUMNS = {
+    "request_type": "VARCHAR(20) NOT NULL DEFAULT 'support'",
+    "title": "VARCHAR(200) NOT NULL DEFAULT ''",
+    "category": "VARCHAR(60) NOT NULL DEFAULT 'general'",
+    "preferred_date": "VARCHAR(10) NOT NULL DEFAULT ''",
+    "preferred_time": "VARCHAR(5) NOT NULL DEFAULT ''",
+    "duration_minutes": "INTEGER",
+    "location_pref": "VARCHAR(120) NOT NULL DEFAULT ''",
+    "notes": "TEXT NOT NULL DEFAULT ''",
+    "admin_response": "TEXT NOT NULL DEFAULT ''",
+    "updated_at": "TIMESTAMP WITH TIME ZONE" if "postgres" in engine.dialect.name else "DATETIME",
+}
+
+
+def _ensure_report_columns() -> None:
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    if "severity_reports" not in inspector.get_table_names():
+        return
+    existing = {col["name"] for col in inspector.get_columns("severity_reports")}
+    missing = [(name, ddl) for name, ddl in _REPORT_COLUMNS.items() if name not in existing]
+    if not missing:
+        return
+    with engine.begin() as conn:
+        for name, ddl in missing:
+            conn.execute(text(f"ALTER TABLE severity_reports ADD COLUMN {name} {ddl}"))
 
 
 def _ensure_admin() -> None:

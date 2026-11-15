@@ -12,7 +12,9 @@ export type ModelProgressCallback = (progress: number) => void;
 function configureRuntime(): void {
   ort.env.wasm.numThreads = 1;
   ort.env.wasm.simd = true;
-  ort.env.wasm.wasmPaths = ORT_WASM_PATH;
+  ort.env.wasm.wasmPaths = {
+    wasm: `${ORT_WASM_PATH}ort-wasm-simd-threaded.wasm`,
+  };
 }
 
 async function readModelBytes(

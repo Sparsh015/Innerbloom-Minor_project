@@ -19,9 +19,9 @@ import { DashboardOverview } from "@/components/dashboard/dashboard-overview";
 import { SocialFeed } from "@/components/dashboard/social-feed";
 import { PeerMatching } from "@/components/matching/peer-matching";
 import { CommunitiesSection } from "@/components/communities/communities-section";
-import { AdminPanel } from "@/components/admin/admin-panel";
 import { NotificationsPanel } from "@/components/dashboard/notifications-panel";
 import { IncomingCallListener } from "@/components/calls/IncomingCallListener";
+import { FacialAutoCheckProvider } from "@/components/facial-auto-check/FacialAutoCheckProvider";
 import { HelpSection } from "@/components/support/help-section";
 import { WellnessPage } from "@/components/wellness/wellness-page";
 import { useTheme } from "next-themes";
@@ -314,7 +314,9 @@ function Chats() {
           {loadingList && <div className="text-sm text-muted-foreground">Loading…</div>}
           {listError && <div className="text-sm text-red-600">{listError}</div>}
           {!loadingList && !listError && conversations.length === 0 && (
-            <div className="text-sm text-muted-foreground">No conversations yet.</div>
+            <div className="text-sm text-muted-foreground">
+              No connected peers yet. Find peers and connect to start chatting.
+            </div>
           )}
           {conversations.map(chat => (
             <div
@@ -327,7 +329,9 @@ function Chats() {
               </div>
               <div className="flex-1">
                 <div className="font-semibold text-foreground">{chat.name}</div>
-                <div className="text-xs text-muted-foreground truncate max-w-[120px]">{chat.last_message}</div>
+                <div className="text-xs text-muted-foreground truncate max-w-[120px]">
+                  {chat.last_message || "Connected — say hello"}
+                </div>
               </div>
               {chat.unread_count > 0 && (
                 <span className="text-xs bg-primary text-white rounded-full px-2 py-0.5">{chat.unread_count}</span>
@@ -567,8 +571,6 @@ const Dashboard = () => {
         return <ProfilePage />;
       case "chats":
         return <Chats />;
-      case "admin":
-        return currentUser()?.role === "admin" ? <AdminPanel /> : <DashboardOverview />;
       default:
         return <DashboardOverview />;
     }
@@ -579,11 +581,13 @@ const Dashboard = () => {
       <Navigation activeTab={activeTab} onTabChange={setActiveTab} />
       {/* Global incoming call overlay — renders for all logged-in users */}
       <IncomingCallListener />
-      <main className="pt-20 pb-8">
-        <div className="container mx-auto px-4 max-w-7xl">
-          {renderContent()}
-        </div>
-      </main>
+      <FacialAutoCheckProvider>
+        <main className="pt-20 pb-8">
+          <div className="container mx-auto px-4 max-w-7xl">
+            {renderContent()}
+          </div>
+        </main>
+      </FacialAutoCheckProvider>
     </div>
   );
 };

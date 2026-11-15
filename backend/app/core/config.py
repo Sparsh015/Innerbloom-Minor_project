@@ -17,6 +17,19 @@ class Settings(BaseSettings):
     ADMIN_PASSWORD: str = "Admin123!"
     ADMIN_NAME: str = "InnerBloom Admin"
 
+    # Groq wellness chatbot (server-side only — never expose to the frontend)
+    GROQ_API_KEY: str = ""
+    GROQ_MODEL: str = "openai/gpt-oss-120b"
+    GROQ_API_URL: str = "https://api.groq.com/openai/v1/chat/completions"
+    AI_CONTEXT_MESSAGES: int = 10
+    AI_MAX_TOKENS: int = 512
+    AI_TEMPERATURE: float = 0.7
+    AI_TIMEOUT_SECONDS: float = 30.0
+
+    @property
+    def ai_configured(self) -> bool:
+        return bool(self.GROQ_API_KEY.strip())
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]

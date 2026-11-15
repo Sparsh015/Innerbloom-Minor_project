@@ -41,3 +41,12 @@ def require_admin(current: models.User = Depends(get_current_user)) -> models.Us
     if current.role != "admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
     return current
+
+
+def require_user(current: models.User = Depends(get_current_user)) -> models.User:
+    """Guard member-only features. Admins use the separate admin dashboard."""
+    if current.role != "user":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Member access required"
+        )
+    return current

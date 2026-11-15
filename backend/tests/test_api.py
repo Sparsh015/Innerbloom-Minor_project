@@ -24,6 +24,7 @@ def fresh_db():
     on_startup()  # TestClient skips lifespan; run startup seed explicitly
     yield
     Base.metadata.drop_all(bind=engine)
+    engine.dispose()
     if os.path.exists("./test_innerbloom.db"):
         try:
             os.remove("./test_innerbloom.db")
@@ -64,6 +65,17 @@ def test_duplicate_register_409():
     r = client.post("/api/auth/register", json={
         "name": "Dup", "email": "a@test.com", "password": "Pass1234"})
     assert r.status_code == 409
+
+
+def test_register_password_strength():
+    for password, email in [("short1", "a@test.com"), ("onlyletters", "b@test.com"),
+                            ("12345678", "c@test.com")]:
+        r = client.post("/api/auth/register", json={
+            "name": "Weak", "email": email, "password": password})
+        assert r.status_code == 422, r.text
+    r = client.post("/api/auth/register", json={
+        "name": "Strong", "email": "d@test.com", "password": "Good1234"})
+    assert r.status_code == 201, r.text
 
 
 def test_invalid_login_401():
@@ -112,6 +124,76 @@ def test_activities_and_journal_privacy():
     # B cannot fetch A's entry by id
     r2 = client.get(f"/api/journal/{j.json()['id']}", headers=auth(b["access_token"]))
     assert r2.status_code == 404
+
+
+def test_facial_checkin_mapping_privacy_and_validation():
+    a = register("a@test.com")
+    b = register("b@test.com", name="User B")
+    r = client.post("/api/facial-check-ins", headers=auth(a["access_token"]),
+                    json={"expression": "fear", "confidence": 0.91})
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["expression_label"] == "Fearful"
+    assert body["mood"] == "Anxious"
+    assert body["stress_level"] == 5
+    assert body["source"] == "auto"
+    assert client.get("/api/facial-check-ins",
+                      headers=auth(a["access_token"])).json()[0]["id"] == body["id"]
+    assert client.get("/api/facial-check-ins",
+                      headers=auth(b["access_token"])).json() == []
+    assert client.post("/api/facial-check-ins", headers=auth(a["access_token"]),
+                       json={"expression": "excited", "confidence": 0.9}).status_code == 422
+    assert client.post("/api/facial-check-ins", headers=auth(a["access_token"]),
+                       json={"expression": "neutral", "confidence": 1.5}).status_code == 422
+
+
+def test_facial_checkins_in_admin_stats_and_member_profile():
+    a = register("a@test.com")
+    client.post("/api/facial-check-ins", headers=auth(a["access_token"]),
+                json={"expression": "happiness", "confidence": 0.88})
+    admin_login = client.post("/api/auth/login", json={
+        "email": "admin@innerbloom.app", "password": "Admin123!"})
+    assert admin_login.status_code == 200
+    adm_token = admin_login.json()["access_token"]
+    stats = client.get("/api/admin/stats", headers=auth(adm_token))
+    assert stats.status_code == 200
+    assert stats.json()["total_facial_check_ins"] == 1
+    assert stats.json()["active_users"] == 1
+    profile = client.get(f"/api/admin/members/{a['user']['id']}", headers=auth(adm_token))
+    assert profile.status_code == 200
+    body = profile.json()
+    assert body["total_facial_check_ins"] == 1
+    assert body["recent_facial_check_ins"][0]["mood"] == "Happy"
+
+
+def test_facial_auto_check_setting_manual_source_and_clear():
+    a = register("a@test.com")
+    # Defaults to disabled and is per-user.
+    r = client.get("/api/facial-check-ins/settings", headers=auth(a["access_token"]))
+    assert r.status_code == 200 and r.json()["enabled"] is False
+    r = client.put("/api/facial-check-ins/settings", headers=auth(a["access_token"]),
+                   json={"enabled": True})
+    assert r.status_code == 200 and r.json()["enabled"] is True
+    assert client.get("/api/facial-check-ins/settings",
+                      headers=auth(a["access_token"])).json()["enabled"] is True
+
+    # Manual captures are stored with source="manual".
+    r = client.post("/api/facial-check-ins", headers=auth(a["access_token"]),
+                    json={"expression": "sadness", "confidence": 0.72, "source": "manual"})
+    assert r.status_code == 201 and r.json()["source"] == "manual"
+
+    # Admin sees the opt-in flag on the member profile.
+    admin_login = client.post("/api/auth/login", json={
+        "email": "admin@innerbloom.app", "password": "Admin123!"})
+    adm_token = admin_login.json()["access_token"]
+    profile = client.get(f"/api/admin/members/{a['user']['id']}", headers=auth(adm_token))
+    assert profile.json()["auto_check_enabled"] is True
+
+    # Members can wipe their own facial data.
+    assert client.delete("/api/facial-check-ins",
+                         headers=auth(a["access_token"])).status_code == 204
+    assert client.get("/api/facial-check-ins",
+                      headers=auth(a["access_token"])).json() == []
 
 
 def test_dashboard():
@@ -209,6 +291,61 @@ def test_admin_reports_flow():
     assert reps.status_code == 200 and len(reps.json()) == 1
 
 
+def test_activity_and_technical_requests_flow():
+    a = register("a@test.com")
+    h = auth(a["access_token"])
+
+    activity = client.post("/api/reports/severity", headers=h, json={
+        "request_type": "activity", "title": "Yoga session",
+        "category": "Wellness", "description": "Evening yoga please",
+        "preferred_date": "2026-12-01", "preferred_time": "18:00",
+        "duration_minutes": 60, "location_pref": "Online",
+    })
+    assert activity.status_code == 201, activity.text
+    body = activity.json()
+    assert body["request_type"] == "activity" and body["title"] == "Yoga session"
+
+    technical = client.post("/api/reports/severity", headers=h, json={
+        "request_type": "technical", "title": "Chat not loading",
+        "category": "Chat", "description": "Messages spin forever",
+    })
+    assert technical.status_code == 201, technical.text
+
+    # activity requests require a preferred date
+    assert client.post("/api/reports/severity", headers=h, json={
+        "request_type": "activity", "title": "No date", "description": "x",
+    }).status_code == 422
+
+    mine = client.get("/api/reports/mine", headers=h)
+    assert mine.status_code == 200 and len(mine.json()) == 2
+
+    adm = client.post("/api/auth/login", json={
+        "email": "admin@innerbloom.app", "password": "Admin123!"}).json()["access_token"]
+    allr = client.get("/api/admin/reports", headers=auth(adm))
+    assert allr.status_code == 200 and len(allr.json()) == 2
+    assert allr.json()[0]["reporter_name"] == "User A"
+
+    stats = client.get("/api/admin/stats", headers=auth(adm)).json()
+    assert stats["pending_activity_requests"] == 1
+    assert stats["pending_technical_reports"] == 1
+    assert stats["pending_support_requests"] == 0
+
+    # Role separation: admins use the admin dashboard, not member-only features.
+    assert client.get("/api/mood/history", headers=auth(adm)).status_code == 403
+    assert client.get("/api/ai/wellness/history", headers=auth(adm)).status_code == 403
+    # Both roles still need their own account/profile endpoint.
+    assert client.get("/api/users/me", headers=auth(adm)).status_code == 200
+
+    rid = technical.json()["id"]
+    updated = client.put(f"/api/admin/reports/{rid}?new_status=resolved&response=Fixed%20now",
+                         headers=auth(adm))
+    assert updated.status_code == 200 and updated.json()["admin_response"] == "Fixed now"
+
+    mine = client.get("/api/reports/mine", headers=h).json()
+    resolved = [r for r in mine if r["id"] == rid][0]
+    assert resolved["status"] == "resolved" and resolved["admin_response"] == "Fixed now"
+
+
 def test_websocket_auth_and_messaging():
     a = register("a@test.com")
     b = register("b@test.com", name="User B")
@@ -240,7 +377,81 @@ def test_conversations_list():
     assert convs2[0]["unread_count"] == 0
 
 
-def test_ai_placeholder():
-    r = client.post("/api/ai/wellness")
-    assert r.status_code == 200
-    assert "not implemented" in r.json()["message"]
+def test_connected_peers_appear_in_conversations_without_messages():
+    a = register("a@test.com")
+    b = register("b@test.com", name="User B")
+    connect = client.post(f"/api/matching/connect/{b['user']['id']}",
+                          headers=auth(a["access_token"]))
+    assert connect.status_code == 201
+
+    for me, other in ((a, b), (b, a)):
+        convs = client.get("/api/conversations", headers=auth(me["access_token"])).json()
+        assert len(convs) == 1
+        assert convs[0]["user_id"] == other["user"]["id"]
+        assert convs[0]["last_message"] == "" and convs[0]["unread_count"] == 0
+
+    client.post("/api/messages", headers=auth(a["access_token"]),
+                json={"recipient_id": b["user"]["id"], "content": "Hello B"})
+    convs = client.get("/api/conversations", headers=auth(b["access_token"])).json()
+    assert len(convs) == 1 and convs[0]["last_message"] == "Hello B"
+
+
+def test_ai_wellness_requires_auth_and_validates():
+    assert client.post("/api/ai/wellness", json={"message": "hello"}).status_code == 401
+    a = register("a@test.com")
+    assert client.post("/api/ai/wellness", headers=auth(a["access_token"]),
+                       json={"message": ""}).status_code == 422
+    assert client.post("/api/ai/wellness", headers=auth(a["access_token"]),
+                       json={"message": "   "}).status_code == 422
+
+
+def test_ai_wellness_crisis_guardrail():
+    a = register("a@test.com")
+    r = client.post("/api/ai/wellness", headers=auth(a["access_token"]),
+                    json={"message": "I want to kill myself"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["crisis"] is True
+    assert any("14416" in item for item in body["resources"])
+    hist = client.get("/api/ai/wellness/history",
+                      headers=auth(a["access_token"])).json()
+    assert [m["role"] for m in hist] == ["user", "assistant"]
+    assert hist[1]["crisis"] is True
+
+
+def test_ai_wellness_success_persists_and_clears(monkeypatch):
+    a = register("a@test.com")
+    b = register("b@test.com", name="User B")
+
+    async def fake_call(history, message):
+        assert history == []
+        assert message == "I feel stressed"
+        return "Take a slow breath with me."
+
+    monkeypatch.setattr("app.services.ai_service._call_groq", fake_call)
+    r = client.post("/api/ai/wellness", headers=auth(a["access_token"]),
+                    json={"message": "I feel stressed"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["message"]["content"] == "Take a slow breath with me."
+    assert body["crisis"] is False
+    hist = client.get("/api/ai/wellness/history",
+                      headers=auth(a["access_token"])).json()
+    assert [m["role"] for m in hist] == ["user", "assistant"]
+    assert client.get("/api/ai/wellness/history",
+                      headers=auth(b["access_token"])).json() == []
+    assert client.delete("/api/ai/wellness/history",
+                         headers=auth(a["access_token"])).status_code == 204
+    assert client.get("/api/ai/wellness/history",
+                      headers=auth(a["access_token"])).json() == []
+
+
+def test_ai_wellness_missing_key(monkeypatch):
+    a = register("a@test.com")
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "GROQ_API_KEY", "")
+    r = client.post("/api/ai/wellness", headers=auth(a["access_token"]),
+                    json={"message": "hello"})
+    assert r.status_code == 503
+    assert "GROQ_API_KEY" in r.json()["detail"]

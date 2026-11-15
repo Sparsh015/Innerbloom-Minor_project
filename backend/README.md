@@ -159,7 +159,9 @@ npm run dev       # then open the Vite URL
 | GET/PUT| /api/admin/reports[/{id}]             | admin | Review/update reports          |
 | POST/PUT/DELETE | /api/admin/communities...   | admin | Manage communities             |
 | GET    | /api/admin/users                      | admin | List users (no wellness data)  |
-| POST   | /api/ai/wellness                      | no*   | Placeholder (not implemented)  |
+| POST   | /api/ai/wellness                      | user  | Groq wellness chat (persisted) |
+| GET    | /api/ai/wellness/history              | user  | Own AI chat history            |
+| DELETE | /api/ai/wellness/history              | user  | Clear own AI chat history      |
 
 ## Troubleshooting
 
@@ -171,10 +173,18 @@ npm run dev       # then open the Vite URL
 - On Windows Git Bash, use `py` (py launcher) instead of `python`.
 - `npm install` needs `--legacy-peer-deps` (peer conflict in template deps).
 
-## AI/RAG future extension
+## AI wellness chatbot
 
-RAG is **not implemented**. `POST /api/ai/wellness` returns
-`{"message": "AI wellness assistant is not implemented yet."}`.
-To add RAG later: implement retrieval + LLM calls inside
-`backend/app/services/ai_service.py` (the router already delegates to it).
-Do not add journal/mood-note content to prompts without explicit user consent.
+`POST /api/ai/wellness` calls the Groq Chat Completions API through
+`backend/app/services/ai_service.py`. Set `GROQ_API_KEY` (and optionally
+`GROQ_MODEL`) in `backend/.env`. Conversations are persisted per user in
+`wellness_chat_messages`; history is available at
+`GET /api/ai/wellness/history` and can be cleared with `DELETE`.
+
+Safety: self-harm/crisis phrases trigger a deterministic response with India
+helplines (Tele-MANAS 14416, KIRAN 1800-599-0019) and emergency 112, without
+calling the LLM. The assistant is supportive only — never diagnostic.
+
+RAG over `wellness_resources` is still **not implemented**. To add it later,
+implement retrieval inside `ai_service.py`. Do not add journal/mood-note
+content to prompts without explicit user consent.

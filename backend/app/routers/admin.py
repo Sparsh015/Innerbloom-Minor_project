@@ -26,30 +26,46 @@ def _days_ago(n: int) -> datetime:
 # ── existing endpoints ────────────────────────────────────────────────────────
 
 @router.get("/reports", response_model=list[schemas.SeverityReportOut],
-            summary="Review all concern reports (admin)")
-def all_reports(admin: models.User = Depends(require_admin), db: Session = Depends(get_db)):
-    rows = db.query(models.SeverityReport).order_by(
-        models.SeverityReport.created_at.desc()).limit(200).all()
-    return [schemas.SeverityReportOut(id=r.id, concern_level=r.concern_level,
-                                      description=r.description, status=r.status,
-                                      created_at=r.created_at) for r in rows]
+            summary="Review all support, activity and technical requests (admin)")
+def all_reports(request_type: str | None = Query(default=None),
+                concern_level: str | None = Query(default=None),
+                status_filter: str | None = Query(default=None, alias="status"),
+                admin: models.User = Depends(require_admin),
+                db: Session = Depends(get_db)):
+    from app.routers.reports import report_out
+
+    q = db.query(models.SeverityReport)
+    if request_type:
+        q = q.filter(models.SeverityReport.request_type == request_type)
+    if concern_level:
+        q = q.filter(models.SeverityReport.concern_level == concern_level)
+    if status_filter:
+        q = q.filter(models.SeverityReport.status == status_filter)
+    rows = q.order_by(models.SeverityReport.created_at.desc()).limit(200).all()
+    users = {u.id: u for u in db.query(models.User).all()}
+    return [report_out(r, users.get(r.reporter_id)) for r in rows]
 
 
 @router.put("/reports/{report_id}", response_model=schemas.SeverityReportOut,
-            summary="Update a report status (admin)")
+            summary="Update a request status and/or reply (admin)")
 def update_report(report_id: str, new_status: str,
+                  response: str | None = Query(default=None),
                   admin: models.User = Depends(require_admin), db: Session = Depends(get_db)):
+    from app.routers.reports import report_out
+
     if new_status not in ("open", "reviewed", "resolved"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid status")
     report = db.query(models.SeverityReport).filter_by(id=report_id).first()
     if report is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found")
     report.status = new_status
+    if response is not None:
+        report.admin_response = response.strip()
+    report.updated_at = _utcnow()
     db.commit()
     db.refresh(report)
-    return schemas.SeverityReportOut(id=report.id, concern_level=report.concern_level,
-                                     description=report.description, status=report.status,
-                                     created_at=report.created_at)
+    reporter = db.query(models.User).filter_by(id=report.reporter_id).first()
+    return report_out(report, reporter)
 
 
 @router.post("/communities", status_code=status.HTTP_201_CREATED,
@@ -108,17 +124,24 @@ def list_users(admin: models.User = Depends(require_admin), db: Session = Depend
 def admin_stats(admin: models.User = Depends(require_admin), db: Session = Depends(get_db)):
     total_users = db.query(models.User).count()
 
-    # Active = users with at least one mood record, activity, or post
+    # Active = users with at least one mood record, activity, post, or facial check-in
     mood_users = {r[0] for r in db.query(models.MoodRecord.user_id).distinct()}
     activity_users = {r[0] for r in db.query(models.Activity.user_id).distinct()}
     post_users = {r[0] for r in db.query(models.Post.author_id).distinct()}
-    active_users = len(mood_users | activity_users | post_users)
+    facial_users = {r[0] for r in db.query(models.FacialCheckIn.user_id).distinct()}
+    active_users = len(mood_users | activity_users | post_users | facial_users)
 
     total_communities = db.query(models.Community).count()
     total_posts = db.query(models.Post).count()
     total_interactions = (db.query(models.PeerConnection).count() +
                           db.query(models.Message).count())
     pending_reports = db.query(models.SeverityReport).filter_by(status="open").count()
+    pending_support = (db.query(models.SeverityReport)
+                       .filter_by(status="open", request_type="support").count())
+    pending_activity = (db.query(models.SeverityReport)
+                        .filter_by(status="open", request_type="activity").count())
+    pending_technical = (db.query(models.SeverityReport)
+                         .filter_by(status="open", request_type="technical").count())
 
     return schemas.AdminStatsOut(
         total_users=total_users,
@@ -127,6 +150,10 @@ def admin_stats(admin: models.User = Depends(require_admin), db: Session = Depen
         total_posts=total_posts,
         total_interactions=total_interactions,
         pending_reports=pending_reports,
+        pending_support_requests=pending_support,
+        pending_activity_requests=pending_activity,
+        pending_technical_reports=pending_technical,
+        total_facial_check_ins=db.query(models.FacialCheckIn).count(),
     )
 
 
@@ -204,6 +231,10 @@ def member_profile(user_id: str, admin: models.User = Depends(require_admin),
     total_posts = db.query(models.Post).filter_by(author_id=user_id).count()
     total_moods = db.query(models.MoodRecord).filter_by(user_id=user_id).count()
     total_activities = db.query(models.Activity).filter_by(user_id=user_id).count()
+    total_facial_check_ins = (db.query(models.FacialCheckIn)
+                              .filter_by(user_id=user_id).count())
+    auto_check = db.query(models.FacialAutoCheckSetting).filter_by(user_id=user_id).first()
+    auto_check_enabled = bool(auto_check and auto_check.enabled)
 
     # Recent moods (consented self-reported data only)
     recent_moods_raw = (db.query(models.MoodRecord).filter_by(user_id=user_id)
@@ -212,6 +243,15 @@ def member_profile(user_id: str, admin: models.User = Depends(require_admin),
         id=m.id, mood=m.mood, energy_level=m.energy_level, note=m.note,
         entry_date=m.entry_date, entry_time=m.entry_time, created_at=m.created_at)
         for m in recent_moods_raw]
+
+    # Recent facial check-ins (only saved after the member opts in)
+    recent_facial_raw = (db.query(models.FacialCheckIn).filter_by(user_id=user_id)
+                         .order_by(models.FacialCheckIn.created_at.desc()).limit(14).all())
+    recent_facial = [schemas.FacialCheckInOut(
+        id=f.id, expression=f.expression, expression_label=f.expression_label,
+        confidence=f.confidence, stress_level=f.stress_level, mood=f.mood,
+        source=f.source, created_at=f.created_at)
+        for f in recent_facial_raw]
 
     # Recent public posts only
     recent_posts_raw = (db.query(models.Post).filter_by(author_id=user_id)
@@ -238,7 +278,10 @@ def member_profile(user_id: str, admin: models.User = Depends(require_admin),
         total_posts=total_posts,
         total_mood_entries=total_moods,
         total_activities=total_activities,
+        total_facial_check_ins=total_facial_check_ins,
+        auto_check_enabled=auto_check_enabled,
         recent_moods=recent_moods,
+        recent_facial_check_ins=recent_facial,
         recent_posts=recent_posts,
         moderation_reports=moderation_reports,
     )

@@ -83,25 +83,34 @@ export function useCamera() {
   }, [releaseStream]);
 
   const startCamera = useCallback(async () => {
-    if (startingRef.current || streamRef.current) {
-      return;
+    if (streamRef.current) {
+      return { ok: true as const };
+    }
+
+    if (startingRef.current) {
+      return {
+        ok: false as const,
+        status: "requesting" as const,
+        error: "Camera start is already in progress.",
+      };
     }
 
     if (
       typeof navigator === "undefined" ||
       !navigator.mediaDevices?.getUserMedia
     ) {
+      const message = "Camera access is not supported in this browser.";
       setStatus("unavailable");
-      setError("Camera access is not supported in this browser.");
-      return;
+      setError(message);
+      return { ok: false as const, status: "unavailable" as const, error: message };
     }
 
     if (!window.isSecureContext) {
+      const message =
+        "Camera access requires a secure connection (HTTPS or localhost).";
       setStatus("unavailable");
-      setError(
-        "Camera access requires a secure connection (HTTPS or localhost).",
-      );
-      return;
+      setError(message);
+      return { ok: false as const, status: "unavailable" as const, error: message };
     }
 
     startingRef.current = true;
@@ -116,7 +125,11 @@ export function useCamera() {
 
       if (stopRequestedRef.current) {
         stream.getTracks().forEach((track) => track.stop());
-        return;
+        return {
+          ok: false as const,
+          status: "idle" as const,
+          error: "Camera start was cancelled.",
+        };
       }
 
       streamRef.current = stream;
@@ -132,11 +145,17 @@ export function useCamera() {
       }
 
       setStatus("active");
+      return { ok: true as const };
     } catch (error) {
       releaseStream();
       const described = describeCameraError(error);
       setStatus(described.status);
       setError(described.message);
+      return {
+        ok: false as const,
+        status: described.status,
+        error: described.message,
+      };
     } finally {
       startingRef.current = false;
     }

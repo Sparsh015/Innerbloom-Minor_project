@@ -29,11 +29,16 @@ export const LoginModal = ({ open, onOpenChange }: LoginModalProps) => {
 
     try {
       // Real backend authentication — JWT is stored only on success.
-      await loginUser(email, password);
-      toast.success("Welcome back! Redirecting to your dashboard...");
+      const auth = await loginUser(email, password);
+      const isAdmin = auth.user.role === "admin";
+      toast.success(
+        isAdmin
+          ? "Welcome back! Redirecting to the admin dashboard..."
+          : "Welcome back! Redirecting to your dashboard...",
+      );
       setLoading(false);
       onOpenChange(false);
-      navigate("/dashboard");
+      navigate(isAdmin ? "/admin" : "/dashboard");
     } catch (err) {
       // Never fake a successful login: stay here and show the real error.
       setLoading(false);

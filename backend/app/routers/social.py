@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app import schemas
-from app.core.dependencies import get_current_user
+from app.core.dependencies import get_current_user, require_user
 from app.db import models
 from app.db.database import get_db
 from app.services import matching_service
@@ -16,14 +16,14 @@ router = APIRouter(tags=["social"])
 @router.post("/api/matching/find", response_model=list[schemas.MatchResult],
              summary="Find compatible peers (deterministic scoring)")
 def find_matches(limit: int = Query(default=20, ge=1, le=50),
-                 current: models.User = Depends(get_current_user),
+                 current: models.User = Depends(require_user),
                  db: Session = Depends(get_db)):
     return [schemas.MatchResult(**m) for m in matching_service.find_matches(db, current, limit)]
 
 
 @router.post("/api/matching/connect/{peer_id}", status_code=status.HTTP_201_CREATED,
              summary="Connect with a peer")
-def connect_peer(peer_id: str, current: models.User = Depends(get_current_user),
+def connect_peer(peer_id: str, current: models.User = Depends(require_user),
                  db: Session = Depends(get_db)):
     if peer_id == current.id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
@@ -63,7 +63,7 @@ def list_communities(current: models.User = Depends(get_current_user),
 @router.post("/api/communities", response_model=schemas.CommunityOut,
              status_code=status.HTTP_201_CREATED, summary="Create a community")
 def create_community(payload: schemas.CommunityCreate,
-                     current: models.User = Depends(get_current_user),
+                     current: models.User = Depends(require_user),
                      db: Session = Depends(get_db)):
     if db.query(models.Community).filter_by(name=payload.name.strip()).first():
         raise HTTPException(status_code=status.HTTP_409_CONFLICT,
@@ -79,7 +79,7 @@ def create_community(payload: schemas.CommunityCreate,
 
 
 @router.post("/api/communities/{community_id}/join", summary="Join a community")
-def join_community(community_id: str, current: models.User = Depends(get_current_user),
+def join_community(community_id: str, current: models.User = Depends(require_user),
                    db: Session = Depends(get_db)):
     community = db.query(models.Community).filter_by(id=community_id).first()
     if community is None:
@@ -99,7 +99,7 @@ def _is_member(db: Session, community_id: str, user_id: str) -> bool:
 
 @router.get("/api/communities/{community_id}/posts", response_model=list[schemas.PostOut],
             summary="List community posts (members see posts)")
-def list_posts(community_id: str, current: models.User = Depends(get_current_user),
+def list_posts(community_id: str, current: models.User = Depends(require_user),
                db: Session = Depends(get_db)):
     community = db.query(models.Community).filter_by(id=community_id).first()
     if community is None:
@@ -118,7 +118,7 @@ def list_posts(community_id: str, current: models.User = Depends(get_current_use
 @router.post("/api/communities/{community_id}/posts", response_model=schemas.PostOut,
              status_code=status.HTTP_201_CREATED, summary="Post in a joined community")
 def create_post(community_id: str, payload: schemas.PostCreate,
-                current: models.User = Depends(get_current_user),
+                current: models.User = Depends(require_user),
                 db: Session = Depends(get_db)):
     community = db.query(models.Community).filter_by(id=community_id).first()
     if community is None:

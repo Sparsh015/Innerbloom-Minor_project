@@ -6,6 +6,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     String,
@@ -86,6 +87,54 @@ class MoodRecord(Base):
             "energy_level IS NULL OR (energy_level >= 1 AND energy_level <= 10)",
             name="ck_mood_energy_range",
         ),
+    )
+
+
+class FacialCheckIn(Base):
+    """Consented, AI-estimated facial check-in. Never stores images or video."""
+    __tablename__ = "facial_check_ins"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    expression: Mapped[str] = mapped_column(String(40), nullable=False)
+    expression_label: Mapped[str] = mapped_column(String(60), nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    stress_level: Mapped[int] = mapped_column(Integer, nullable=False)
+    mood: Mapped[str] = mapped_column(String(60), nullable=False)
+    source: Mapped[str] = mapped_column(String(20), nullable=False, default="auto")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "expression IN ('neutral','happiness','surprise','sadness','anger','disgust','fear','contempt')",
+            name="ck_facial_expression",
+        ),
+        CheckConstraint(
+            "confidence >= 0 AND confidence <= 1",
+            name="ck_facial_confidence_range",
+        ),
+        CheckConstraint(
+            "stress_level >= 1 AND stress_level <= 5",
+            name="ck_facial_stress_range",
+        ),
+        CheckConstraint("source IN ('auto','manual')", name="ck_facial_source"),
+    )
+
+
+class FacialAutoCheckSetting(Base):
+    """Per-user opt-in for automatic recurring facial check-ins."""
+    __tablename__ = "facial_auto_check_settings"
+
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
 
@@ -230,6 +279,16 @@ class SeverityReport(Base):
     concern_level: Mapped[str] = mapped_column(String(20), nullable=False)  # low|medium|high|urgent
     description: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="open")
+    request_type: Mapped[str] = mapped_column(String(20), nullable=False, default="support")
+    title: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    category: Mapped[str] = mapped_column(String(60), nullable=False, default="general")
+    preferred_date: Mapped[str] = mapped_column(String(10), nullable=False, default="")
+    preferred_time: Mapped[str] = mapped_column(String(5), nullable=False, default="")
+    duration_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    location_pref: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    admin_response: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -267,6 +326,26 @@ class VideoCall(Base):
             name="ck_videocall_status",
         ),
         CheckConstraint("caller_id != callee_id", name="ck_videocall_not_self"),
+    )
+
+
+class WellnessChatMessage(Base):
+    """Persisted, per-user conversation with the AI wellness assistant."""
+    __tablename__ = "wellness_chat_messages"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    role: Mapped[str] = mapped_column(String(12), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    crisis: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+
+    __table_args__ = (
+        CheckConstraint("role IN ('user','assistant')", name="ck_wellness_chat_role"),
     )
 
 

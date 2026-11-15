@@ -3,8 +3,8 @@
  * Comprehensive admin panel with overview, community management,
  * member profiles, activity feed, and AI-assisted behavioural insights.
  *
- * Scope: Admin only. No facial recognition, no private journals/messages.
- * Mood/wellness data is self-reported and shown only where consent applies.
+ * Scope: Admin only. Facial check-ins are opt-in and shown separately.
+ * Private journals/messages stay hidden. Insights use self-reported data only.
  */
 import { useCallback, useEffect, useState } from "react";
 import {
@@ -12,7 +12,8 @@ import {
   Eye, Trash2, ChevronRight, Search, Filter, TrendingUp,
   TrendingDown, Minus, AlertCircle, CheckCircle, Clock,
   UserCheck, ArrowLeft, RefreshCw, Flag, Settings,
-  Info, FileText, Globe, Video, PhoneOff, PhoneMissed, PhoneCall
+  Info, FileText, Globe, Video, PhoneOff, PhoneMissed, PhoneCall, ScanFace,
+  Calendar as CalendarIcon
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -31,13 +32,15 @@ import {
   adminDeleteCommunity, adminCreateCommunity, adminActivityFeed,
   adminMemberProfile, adminMemberInsights, adminCommunityInsights,
   adminCallHistory, initiateCall, updateCallStatus,
-  listCommunities,
+  getMe, updateMe, listCommunities,
   type AdminStats, type AdminUser, type Community, type AdminPost,
   type AdminCommunityMember, type ActivityFeedItem,
   type MemberInsight, type CommunityInsight, type AdminMemberProfile,
-  type VideoCall,
+  type VideoCall, type SupportRequest,
 } from "@/lib/api";
+import { Textarea } from "@/components/ui/textarea";
 import { VideoCallModal } from "@/components/calls/VideoCallModal";
+import { useTheme } from "next-themes";
 
 // ─── colour helpers ────────────────────────────────────────────────────────
 
@@ -117,7 +120,7 @@ function OverviewTab({ stats, communities, loading }: {
   return (
     <div className="space-y-6">
       {/* KPI cards */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
         <StatCard title="Total Members" value={stats?.total_users ?? "…"} icon={Users}
           gradient="bg-gradient-wellness" sub="Registered accounts" />
         <StatCard title="Active Members" value={stats?.active_users ?? "…"} icon={Activity}
@@ -128,9 +131,20 @@ function OverviewTab({ stats, communities, loading }: {
           gradient="bg-gradient-wellness" sub="Community discussions" />
         <StatCard title="Interactions" value={stats?.total_interactions ?? "…"} icon={Users}
           gradient="bg-gradient-soft" sub="Connections & messages" />
-        <StatCard title="Pending Reports" value={stats?.pending_reports ?? "…"} icon={ShieldAlert}
+        <StatCard title="Facial Check-ins" value={stats?.total_facial_check_ins ?? "…"} icon={ScanFace}
+          gradient="bg-accent" sub="Consented auto checks" />
+        <StatCard title="Pending Support" value={stats?.pending_support_requests ?? "…"} icon={ShieldAlert}
+          gradient={stats?.pending_support_requests ? "bg-red-500" : "bg-green-500"}
+          sub="General requests" />
+        <StatCard title="Pending Activities" value={stats?.pending_activity_requests ?? "…"} icon={CalendarIcon}
+          gradient={stats?.pending_activity_requests ? "bg-orange-500" : "bg-green-500"}
+          sub="Activity requests" />
+        <StatCard title="Technical Reports" value={stats?.pending_technical_reports ?? "…"} icon={AlertCircle}
+          gradient={stats?.pending_technical_reports ? "bg-orange-500" : "bg-green-500"}
+          sub="Open problems" />
+        <StatCard title="Pending Reports" value={stats?.pending_reports ?? "…"} icon={Flag}
           gradient={stats?.pending_reports ? "bg-red-500" : "bg-green-500"}
-          sub="Awaiting review" />
+          sub="All request types" />
       </div>
 
       {/* Community engagement chart */}
@@ -483,6 +497,16 @@ function MemberProfileDetail({ userId, onBack }: { userId: string; onBack: () =>
     mood: m.mood,
   }));
 
+  const facialChartData = [...profile.recent_facial_check_ins]
+    .reverse()
+    .map((f, i) => ({
+      day: i + 1,
+      stress: f.stress_level,
+      mood: f.mood,
+      expression: f.expression_label,
+      confidence: Math.round(f.confidence * 100),
+    }));
+
   return (
     <div className="space-y-5">
       <Button variant="ghost" size="sm" onClick={onBack}><ArrowLeft className="w-4 h-4 mr-1" />Back to Members</Button>
@@ -507,6 +531,12 @@ function MemberProfileDetail({ userId, onBack }: { userId: string; onBack: () =>
               <div className="flex items-center gap-2 flex-wrap">
                 <h3 className="text-lg font-semibold">{profile.name}</h3>
                 {profile.role === "admin" && <Badge variant="secondary">Admin</Badge>}
+                {profile.auto_check_enabled && (
+                  <Badge variant="outline" className="gap-1">
+                    <ScanFace className="w-3 h-3" />
+                    Auto check-ins on
+                  </Badge>
+                )}
               </div>
               <p className="text-sm text-muted-foreground">{profile.email}</p>
               {profile.location && <p className="text-xs text-muted-foreground mt-0.5">📍 {profile.location}</p>}
@@ -527,11 +557,12 @@ function MemberProfileDetail({ userId, onBack }: { userId: string; onBack: () =>
             </div>
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-4">
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mt-4">
             {[
               { label: "Posts", value: profile.total_posts },
               { label: "Mood Entries", value: profile.total_mood_entries },
               { label: "Activities", value: profile.total_activities },
+              { label: "Facial Checks", value: profile.total_facial_check_ins },
               { label: "Reports Filed", value: profile.moderation_reports },
             ].map(s => (
               <div key={s.label} className="text-center p-2 rounded-lg bg-muted/40">
@@ -579,6 +610,52 @@ function MemberProfileDetail({ userId, onBack }: { userId: string; onBack: () =>
                 <Line type="monotone" dataKey="energy" stroke="hsl(var(--primary))" strokeWidth={2} dot={false} />
               </LineChart>
             </ResponsiveContainer>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Facial check-ins */}
+      {profile.recent_facial_check_ins.length > 0 && (
+        <Card className="shadow-soft">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <ScanFace className="w-4 h-4 text-primary" />
+              AI-Estimated Facial Check-ins (last {facialChartData.length})
+            </CardTitle>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Shown only because this member enabled automatic check-ins.
+              Estimates are not diagnoses; images and video are never stored.
+            </p>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <ResponsiveContainer width="100%" height={140}>
+              <LineChart data={facialChartData} margin={{ top: 4, right: 8, left: -20, bottom: 4 }}>
+                <CartesianGrid strokeDasharray="3 3" className="opacity-30" />
+                <XAxis dataKey="day" tick={{ fontSize: 10 }} />
+                <YAxis domain={[1, 5]} tick={{ fontSize: 10 }} />
+                <Tooltip
+                  formatter={(value: number) => [`Stress ${value}/5`, "Estimated stress"]}
+                  labelFormatter={(label) => `Check #${label}`}
+                />
+                <Line type="monotone" dataKey="stress" stroke="hsl(var(--primary))" strokeWidth={2} dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+
+            <div className="max-h-56 space-y-1 overflow-y-auto">
+              {profile.recent_facial_check_ins.map(f => (
+                <div key={f.id} className="flex items-center justify-between gap-2 rounded border p-2 text-xs">
+                  <div className="min-w-0">
+                    <span className="font-medium text-foreground">{f.mood}</span>
+                    <span className="text-muted-foreground"> · {f.expression_label}</span>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2 text-muted-foreground">
+                    <Badge variant="outline">Stress {f.stress_level}/5</Badge>
+                    <span>{Math.round(f.confidence * 100)}%</span>
+                    <span>{timeAgo(f.created_at)}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
           </CardContent>
         </Card>
       )}
@@ -708,79 +785,176 @@ function ActivityFeedTab({ loading: initLoading }: { loading: boolean }) {
 // ─── REPORTS TAB ─────────────────────────────────────────────────────────
 
 function ReportsTab() {
-  const [reports, setReports] = useState<{ id: string; concern_level: string; description: string; status: string; created_at: string }[]>([]);
+  const [reports, setReports] = useState<SupportRequest[]>([]);
   const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState("all");
+  const [typeFilter, setTypeFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [levelFilter, setLevelFilter] = useState("all");
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [savingId, setSavingId] = useState<string | null>(null);
 
   const load = useCallback(() => {
     setLoading(true);
-    adminReports().then(setReports).finally(() => setLoading(false));
+    adminReports()
+      .then((rows) => {
+        setReports(rows);
+        setDrafts(Object.fromEntries(rows.map((r) => [r.id, r.admin_response ?? ""])));
+      })
+      .finally(() => setLoading(false));
   }, []);
 
   useEffect(() => { load(); }, [load]);
 
-  const handleStatus = async (id: string, status: string) => {
+  const update = async (report: SupportRequest, status: string) => {
+    setSavingId(report.id);
     try {
-      await adminUpdateReport(id, status);
-      toast.success("Report status updated.");
+      await adminUpdateReport(report.id, status, drafts[report.id] ?? "");
+      toast.success("Request updated.");
       load();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Failed to update report");
+      toast.error(e instanceof Error ? e.message : "Failed to update request");
+    } finally {
+      setSavingId(null);
     }
   };
 
-  const filtered = reports.filter(r => filter === "all" || r.status === filter);
+  const filtered = reports.filter(
+    (r) =>
+      (typeFilter === "all" || r.request_type === typeFilter) &&
+      (statusFilter === "all" || r.status === statusFilter) &&
+      (levelFilter === "all" || r.concern_level === levelFilter)
+  );
+
+  const typeTabs = [
+    { id: "all", label: "All" },
+    { id: "support", label: "General" },
+    { id: "activity", label: "Activity" },
+    { id: "technical", label: "Technical" },
+  ];
 
   return (
     <div className="space-y-4">
       <div className="flex gap-2 flex-wrap items-center">
-        <Filter className="w-4 h-4 text-muted-foreground" />
-        {["all", "open", "reviewed", "resolved"].map(f => (
-          <Button key={f} size="sm" variant={filter === f ? "default" : "outline"}
-            onClick={() => setFilter(f)} className="capitalize text-xs">
-            {f}
+        {typeTabs.map((t) => (
+          <Button key={t.id} size="sm" variant={typeFilter === t.id ? "default" : "outline"}
+            onClick={() => setTypeFilter(t.id)} className="text-xs">
+            {t.label}
           </Button>
         ))}
-        <Button size="sm" variant="ghost" onClick={load}><RefreshCw className="w-3 h-3" /></Button>
+        <Button size="sm" variant="ghost" onClick={load}><RefreshCw className={`w-3 h-3 ${loading ? "animate-spin" : ""}`} /></Button>
+      </div>
+
+      <div className="flex gap-2 flex-wrap items-center">
+        <Filter className="w-4 h-4 text-muted-foreground" />
+        {[
+          { id: "all", label: "All status" },
+          { id: "open", label: "Pending" },
+          { id: "reviewed", label: "In Progress" },
+          { id: "resolved", label: "Resolved" },
+        ].map((f) => (
+          <Button key={f.id} size="sm" variant={statusFilter === f.id ? "default" : "outline"}
+            onClick={() => setStatusFilter(f.id)} className="text-xs">
+            {f.label}
+          </Button>
+        ))}
+        <select
+          className="border rounded-md px-2 py-1 text-xs bg-background"
+          value={levelFilter}
+          onChange={(e) => setLevelFilter(e.target.value)}
+          aria-label="Filter by urgency"
+        >
+          <option value="all">All urgency</option>
+          <option value="low">Low</option>
+          <option value="medium">Medium</option>
+          <option value="high">High</option>
+          <option value="urgent">Urgent</option>
+        </select>
       </div>
 
       {loading ? <LoadingSpinner /> : (
         <div className="space-y-3">
-          {filtered.map(r => (
+          {filtered.map((r) => (
             <Card key={r.id} className="shadow-soft">
               <CardContent className="pt-4 space-y-3">
                 <div className="flex items-start justify-between gap-2">
                   <div className="flex items-center gap-2 flex-wrap">
+                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium capitalize ${
+                      r.request_type === "technical" ? "bg-slate-100 text-slate-800 dark:bg-slate-800 dark:text-slate-200" :
+                      r.request_type === "activity" ? "bg-violet-100 text-violet-800 dark:bg-violet-900 dark:text-violet-200" :
+                      "bg-rose-100 text-rose-800 dark:bg-rose-900 dark:text-rose-200"
+                    }`}>{r.request_type}</span>
                     <span className={`text-xs px-2 py-0.5 rounded-full font-medium capitalize ${REPORT_LEVEL_COLOR[r.concern_level] ?? ""}`}>
                       {r.concern_level}
                     </span>
-                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium capitalize ${
+                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
                       r.status === "open" ? "bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200" :
                       r.status === "reviewed" ? "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200" :
                       "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200"
-                    }`}>{r.status}</span>
+                    }`}>
+                      {r.status === "open" ? "Pending" : r.status === "reviewed" ? "In Progress" : "Resolved"}
+                    </span>
+                    {r.category && <span className="text-xs text-muted-foreground capitalize">{r.category}</span>}
                   </div>
                   <span className="text-xs text-muted-foreground shrink-0">{timeAgo(r.created_at)}</span>
                 </div>
-                <p className="text-sm">{r.description}</p>
-                <div className="flex gap-2">
-                  {(["open", "reviewed", "resolved"] as const).map(s => (
-                    <Button key={s} size="sm"
-                      variant={r.status === s ? "default" : "outline"}
-                      className="capitalize text-xs"
-                      onClick={() => handleStatus(r.id, s)}>
-                      {s === "open" && <AlertCircle className="w-3 h-3 mr-1" />}
-                      {s === "reviewed" && <Clock className="w-3 h-3 mr-1" />}
-                      {s === "resolved" && <CheckCircle className="w-3 h-3 mr-1" />}
-                      {s}
+
+                <div className="text-xs text-muted-foreground">
+                  From <span className="font-medium text-foreground">{r.reporter_name ?? "Member"}</span>
+                  {r.reporter_email ? ` · ${r.reporter_email}` : ""}
+                </div>
+
+                <div>
+                  <p className="text-sm font-medium">{r.title || "Support request"}</p>
+                  <p className="text-sm text-muted-foreground whitespace-pre-wrap">{r.description}</p>
+                </div>
+
+                {r.request_type === "activity" && (
+                  <div className="text-xs text-muted-foreground flex flex-wrap gap-x-3 gap-y-1">
+                    <span>Date: {r.preferred_date || "—"}</span>
+                    <span>Time: {r.preferred_time || "—"}</span>
+                    <span>Duration: {r.duration_minutes ? `${r.duration_minutes} min` : "—"}</span>
+                    <span>Location: {r.location_pref || "—"}</span>
+                  </div>
+                )}
+                {r.notes && <p className="text-xs text-muted-foreground">Notes: {r.notes}</p>}
+
+                <div className="space-y-1">
+                  <label htmlFor={`reply-${r.id}`} className="text-xs font-medium">Reply to member</label>
+                  <Textarea
+                    id={`reply-${r.id}`}
+                    placeholder="Write a short reply the member will see in My Requests…"
+                    value={drafts[r.id] ?? ""}
+                    onChange={(e) => setDrafts((d) => ({ ...d, [r.id]: e.target.value }))}
+                    className="min-h-[60px]"
+                  />
+                </div>
+
+                <div className="flex gap-2 flex-wrap">
+                  {([
+                    ["open", "Pending", AlertCircle],
+                    ["reviewed", "In Progress", Clock],
+                    ["resolved", "Resolved", CheckCircle],
+                  ] as const).map(([value, label, Icon]) => (
+                    <Button key={value} size="sm"
+                      variant={r.status === value ? "default" : "outline"}
+                      className="text-xs"
+                      disabled={savingId === r.id}
+                      onClick={() => void update(r, value)}>
+                      <Icon className="w-3 h-3 mr-1" />
+                      {label}
                     </Button>
                   ))}
+                  <Button size="sm" variant="secondary" className="text-xs"
+                    disabled={savingId === r.id}
+                    onClick={() => void update(r, r.status)}>
+                    Save reply
+                  </Button>
                 </div>
               </CardContent>
             </Card>
           ))}
           {filtered.length === 0 && (
-            <p className="text-sm text-muted-foreground text-center py-8">No reports found.</p>
+            <p className="text-sm text-muted-foreground text-center py-8">No requests found.</p>
           )}
         </div>
       )}
@@ -824,7 +998,8 @@ function InsightsTab() {
         <p>
           <strong>AI Insights are statistical, not diagnostic.</strong>{" "}
           Trends are derived from self-reported mood and energy data only.
-          No psychological conclusions are drawn. No facial or message data is used.
+          No psychological conclusions are drawn. Facial check-ins and private
+          messages are not used in these insights.
           Insights require a minimum of 4 data points to generate a trend.
         </p>
       </div>
@@ -1032,6 +1207,168 @@ function CreateCommunityForm({ onDone, onCancel }: { onDone: () => void; onCance
   );
 }
 
+// ─── VIDEO CALLS TAB ─────────────────────────────────────────────────────
+
+function VideoCallsTab() {
+  const [calls, setCalls] = useState<VideoCall[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    adminCallHistory(100).then(setCalls).finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const missed = calls.filter(c => c.status === "missed").length;
+  const completed = calls.filter(c => c.status === "accepted" || c.status === "ended").length;
+
+  const statusStyle = (status: string) =>
+    status === "accepted" || status === "ended"
+      ? "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200"
+      : status === "missed"
+        ? "bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200"
+        : status === "declined" || status === "failed"
+          ? "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200"
+          : "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200";
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <StatCard title="Total Calls" value={calls.length} icon={Video} gradient="bg-gradient-wellness" />
+        <StatCard title="Completed" value={completed} icon={PhoneCall} gradient="bg-green-500" />
+        <StatCard title="Missed" value={missed} icon={PhoneMissed} gradient={missed ? "bg-orange-500" : "bg-green-500"} />
+        <StatCard title="Declined" value={calls.filter(c => c.status === "declined").length} icon={PhoneOff} gradient="bg-red-500" />
+      </div>
+
+      <div className="flex justify-end">
+        <Button size="sm" variant="ghost" onClick={load} disabled={loading}>
+          <RefreshCw className={`w-3 h-3 mr-1 ${loading ? "animate-spin" : ""}`} /> Refresh
+        </Button>
+      </div>
+
+      {loading ? <LoadingSpinner /> : (
+        <div className="space-y-2">
+          {calls.map(c => (
+            <div key={c.id} className="flex items-center justify-between gap-3 p-3 rounded-lg border bg-card">
+              <div className="flex items-center gap-2 min-w-0">
+                <Video className="w-4 h-4 text-muted-foreground shrink-0" />
+                <div className="min-w-0">
+                  <p className="text-sm font-medium truncate">Call with {c.callee_name || "member"}</p>
+                  <p className="text-xs text-muted-foreground">{timeAgo(c.started_at)}</p>
+                </div>
+              </div>
+              <span className={`text-xs px-2 py-0.5 rounded-full font-medium capitalize shrink-0 ${statusStyle(c.status)}`}>
+                {c.status}
+              </span>
+            </div>
+          ))}
+          {calls.length === 0 && (
+            <p className="text-sm text-muted-foreground text-center py-8">
+              No calls yet. Start one from a member profile.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── ADMIN SETTINGS TAB ──────────────────────────────────────────────────
+
+function AdminSettingsTab() {
+  const { theme, setTheme } = useTheme();
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    getMe()
+      .then(me => {
+        setName(me.name);
+        setEmail(me.email);
+        setPhone(me.phone ?? "");
+      })
+      .finally(() => setLoading(false));
+  }, []);
+
+  const save = async () => {
+    if (!name.trim()) {
+      toast.error("Name cannot be empty");
+      return;
+    }
+    setSaving(true);
+    try {
+      const me = await updateMe({ name: name.trim(), phone: phone.trim() });
+      setName(me.name);
+      setPhone(me.phone ?? "");
+      toast.success("Admin profile updated.");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to update profile");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) return <LoadingSpinner />;
+
+  return (
+    <div className="space-y-4 max-w-2xl">
+      <Card className="shadow-soft">
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2">
+            <Settings className="w-4 h-4 text-primary" /> Admin Profile
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="space-y-1">
+            <label htmlFor="admin-name" className="text-sm font-medium">Name</label>
+            <Input id="admin-name" value={name} onChange={e => setName(e.target.value)} />
+          </div>
+          <div className="space-y-1">
+            <label htmlFor="admin-email" className="text-sm font-medium">Email</label>
+            <Input id="admin-email" value={email} readOnly disabled />
+            <p className="text-xs text-muted-foreground">Email changes require account support.</p>
+          </div>
+          <div className="space-y-1">
+            <label htmlFor="admin-phone" className="text-sm font-medium">Phone (optional)</label>
+            <Input id="admin-phone" value={phone} onChange={e => setPhone(e.target.value)} />
+          </div>
+          <Button size="sm" onClick={save} disabled={saving}>
+            {saving ? "Saving…" : "Save Profile"}
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card className="shadow-soft">
+        <CardHeader>
+          <CardTitle className="text-base">Administrative Preferences</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div>
+            <p className="text-sm font-medium mb-2">Appearance</p>
+            <div className="flex gap-2">
+              <Button size="sm" variant={theme !== "dark" ? "default" : "outline"} onClick={() => setTheme("light")}>
+                Light
+              </Button>
+              <Button size="sm" variant={theme === "dark" ? "default" : "outline"} onClick={() => setTheme("dark")}>
+                Dark
+              </Button>
+            </div>
+          </div>
+          <div className="rounded-lg border p-3 text-sm text-muted-foreground">
+            <p className="font-medium text-foreground mb-1">Access scope</p>
+            This account can review member and community data, respond to support requests, and
+            initiate video calls. Private journals and direct messages remain inaccessible.
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
 // ─── MAIN ADMIN PANEL ────────────────────────────────────────────────────
 
 export function AdminPanel() {
@@ -1135,7 +1472,7 @@ export function AdminPanel() {
           </TabsTrigger>
           <TabsTrigger value="reports" className="gap-1 text-xs sm:text-sm">
             <Flag className="w-3 h-3" />
-            Reports
+            Support
             {stats?.pending_reports ? (
               <span className="ml-1 bg-red-500 text-white text-xs rounded-full w-4 h-4 flex items-center justify-center">
                 {stats.pending_reports > 9 ? "9+" : stats.pending_reports}
@@ -1144,6 +1481,12 @@ export function AdminPanel() {
           </TabsTrigger>
           <TabsTrigger value="insights" className="gap-1 text-xs sm:text-sm">
             <TrendingUp className="w-3 h-3" /> AI Insights
+          </TabsTrigger>
+          <TabsTrigger value="video" className="gap-1 text-xs sm:text-sm">
+            <Video className="w-3 h-3" /> Video Calls
+          </TabsTrigger>
+          <TabsTrigger value="settings" className="gap-1 text-xs sm:text-sm">
+            <Settings className="w-3 h-3" /> Settings
           </TabsTrigger>
         </TabsList>
 
@@ -1198,6 +1541,16 @@ export function AdminPanel() {
         {/* ── AI Insights ── */}
         <TabsContent value="insights" className="mt-5">
           <InsightsTab />
+        </TabsContent>
+
+        {/* ── Video Calls ── */}
+        <TabsContent value="video" className="mt-5">
+          <VideoCallsTab />
+        </TabsContent>
+
+        {/* ── Admin Settings ── */}
+        <TabsContent value="settings" className="mt-5">
+          <AdminSettingsTab />
         </TabsContent>
       </Tabs>
     </div>

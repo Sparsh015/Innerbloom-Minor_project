@@ -1,7 +1,8 @@
 """Pydantic request/response schemas for the whole API."""
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 
 
 # ---------- Auth ----------
@@ -88,6 +89,52 @@ class MoodOut(BaseModel):
     entry_date: str
     entry_time: str
     created_at: datetime
+
+
+# ---------- Facial check-ins ----------
+FacialExpression = Literal[
+    "neutral", "happiness", "surprise", "sadness", "anger", "disgust", "fear", "contempt"
+]
+
+
+class FacialCheckInCreate(BaseModel):
+    expression: FacialExpression
+    confidence: float = Field(ge=0, le=1)
+    source: Literal["auto", "manual"] = "auto"
+
+
+class FacialAutoCheckSettings(BaseModel):
+    enabled: bool
+
+
+class FacialCheckInOut(BaseModel):
+    id: str
+    expression: FacialExpression
+    expression_label: str
+    confidence: float
+    stress_level: int
+    mood: str
+    source: str
+    created_at: datetime
+
+
+# ---------- AI wellness chat ----------
+class WellnessChatRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=4000)
+
+
+class WellnessChatMessageOut(BaseModel):
+    id: str
+    role: Literal["user", "assistant"]
+    content: str
+    crisis: bool = False
+    created_at: datetime
+
+
+class WellnessChatResponse(BaseModel):
+    message: WellnessChatMessageOut
+    crisis: bool = False
+    resources: list[str] = []
 
 
 # ---------- Activities ----------
@@ -210,18 +257,49 @@ class NotificationOut(BaseModel):
     created_at: datetime
 
 
-# ---------- Reports ----------
+# ---------- Reports / support requests ----------
 class SeverityReportCreate(BaseModel):
-    concern_level: str = Field(pattern="^(low|medium|high|urgent)$")
+    request_type: Literal["support", "activity", "technical"] = "support"
+    concern_level: str = Field(default="low", pattern="^(low|medium|high|urgent)$")
+    title: str = Field(default="", max_length=200)
+    category: str = Field(default="other", max_length=60)
     description: str = Field(min_length=1, max_length=5000)
+    preferred_date: str = Field(default="", max_length=10)
+    preferred_time: str = Field(default="", max_length=5)
+    duration_minutes: int | None = Field(default=None, ge=15, le=480)
+    location_pref: str = Field(default="", max_length=120)
+    notes: str = Field(default="", max_length=2000)
+
+    @model_validator(mode="after")
+    def _check_required(self):
+        if not self.title.strip():
+            if self.request_type == "support":
+                self.title = self.description.strip()[:80]
+            else:
+                raise ValueError("A short title is required")
+        if self.request_type == "activity" and not self.preferred_date.strip():
+            raise ValueError("A preferred date is required for activity requests")
+        return self
 
 
 class SeverityReportOut(BaseModel):
     id: str
+    request_type: str = "support"
     concern_level: str
+    title: str = ""
+    category: str = "general"
     description: str
+    preferred_date: str = ""
+    preferred_time: str = ""
+    duration_minutes: int | None = None
+    location_pref: str = ""
+    notes: str = ""
+    admin_response: str = ""
     status: str
     created_at: datetime
+    updated_at: datetime | None = None
+    reporter_name: str | None = None
+    reporter_email: str | None = None
 
 
 # ---------- Admin ----------
@@ -236,11 +314,15 @@ class AdminUserOut(BaseModel):
 
 class AdminStatsOut(BaseModel):
     total_users: int
-    active_users: int          # users with at least one mood/activity/post
+    active_users: int          # users with at least one mood/activity/post/facial check-in
     total_communities: int
     total_posts: int
     total_interactions: int    # peer connections + messages
     pending_reports: int
+    pending_support_requests: int = 0
+    pending_activity_requests: int = 0
+    pending_technical_reports: int = 0
+    total_facial_check_ins: int = 0
 
 
 class AdminCommunityMemberOut(BaseModel):
@@ -275,7 +357,10 @@ class AdminMemberProfileOut(BaseModel):
     total_posts: int = 0
     total_mood_entries: int = 0
     total_activities: int = 0
+    total_facial_check_ins: int = 0
+    auto_check_enabled: bool = False
     recent_moods: list[MoodOut] = []
+    recent_facial_check_ins: list[FacialCheckInOut] = []
     recent_posts: list["AdminPostOut"] = []
     moderation_reports: int = 0
 

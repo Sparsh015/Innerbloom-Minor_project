@@ -17,7 +17,7 @@ InnerBloom is a comprehensive mental health peer support platform designed to co
 - **Activity Tracker**: Monitor daily activities and their impact on mood
 - **Mood Journal**: Track emotional patterns over time with detailed notes
 - **Energy Levels**: Monitor energy throughout the day with visual charts
-- **Stress Detection**: AI-powered facial stress analysis (simulated)
+- **Stress Detection**: On-device facial expression analysis with opt-in automatic check-ins; only derived mood/stress estimates are stored (never images or video)
 - **Health Chatbot**: Get personalized wellness tips and support
 
 ### 👥 Community Features
