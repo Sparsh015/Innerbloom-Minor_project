@@ -5,7 +5,7 @@ services:
     rootDir: backend
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: bash -c 'if [ -d backend/app ]; then cd backend; fi; exec uvicorn app.main:app --host 0.0.0.0 --port "$PORT"'
+    startCommand: bash -c 'if [ -f app/main.py ]; then exec uvicorn app.main:app --host 0.0.0.0 --port "$PORT"; elif [ -d backend/app ]; then cd backend && exec uvicorn app.main:app --host 0.0.0.0 --port "$PORT"; else echo "backend app not found" >&2; exit 1; fi'
     healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
