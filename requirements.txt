@@ -1,31 +1,6 @@
-# This project is built with React, TypeScript, and Vite (Node.js ecosystem).
-# requirements.txt is provided for documentation/reference only.
-# To install dependencies, use package.json with npm or yarn.
-
-# Main Tech Stack
-react
-react-dom
-typescript
-vite
-tailwindcss
-shadcn-ui
-lucide-react
-recharts
-@tanstack/react-query
-sonner
-
-# UI/UX
-@radix-ui/react-*  # Radix UI primitives (accordion, dialog, etc.)
-clsx
-class-variance-authority
-
-# Form & Validation
-react-hook-form
-zod
-
-# Date/Time
-react-day-picker
-date-fns
-
-# Other
-next-themes 
+# Python dependencies for the FastAPI backend.
+# NOTE: This root file exists to prevent pip mis-detection on hosts (e.g. Render)
+# that default to `pip install -r requirements.txt` from the repo root.
+# The backend source lives in ./backend — prefer Render Blueprint (render.yaml)
+# or set Root Directory to "backend".
+-r backend/requirements.txt
