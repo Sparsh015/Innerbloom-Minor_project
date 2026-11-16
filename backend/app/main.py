@@ -1,5 +1,7 @@
 """InnerBloom FastAPI backend — main application."""
-from fastapi import FastAPI
+import re
+
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -17,19 +19,47 @@ app = FastAPI(
     version="1.0.0",
 )
 
+_cors_origins = settings.cors_origin_list or ["http://localhost:5173"]
+_cors_origin_regex = settings.cors_origin_regex
+_cors_origin_regex_compiled = re.compile(_cors_origin_regex) if _cors_origin_regex else None
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origin_list or ["http://localhost:5173"],
+    allow_origins=_cors_origins,
+    allow_origin_regex=_cors_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
+def _cors_headers_for_origin(origin: str | None) -> dict[str, str]:
+    if not origin:
+        return {}
+    allowed = origin in _cors_origins or (
+        _cors_origin_regex_compiled.fullmatch(origin) is not None
+        if _cors_origin_regex_compiled
+        else False
+    )
+    if not allowed:
+        return {}
+    # Echo the specific allowed origin (never "*") so credentials/JWT auth remain valid.
+    return {
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Credentials": "true",
+        "Vary": "Origin",
+    }
+
+
 @app.exception_handler(Exception)
-async def unhandled_exception_handler(_request, _exc):
-    # Never leak stack traces or DB errors to clients.
-    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+async def unhandled_exception_handler(request: Request, _exc):
+    # Never leak stack traces or DB errors to clients. Include CORS headers so
+    # browsers can surface the real 500 instead of masking it as a CORS failure.
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"},
+        headers=_cors_headers_for_origin(request.headers.get("origin")),
+    )
 
 
 app.include_router(auth.router)
