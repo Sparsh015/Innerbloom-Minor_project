@@ -76,10 +76,18 @@ app.include_router(calls.router)
 
 @app.on_event("startup")
 def on_startup() -> None:
+    # Startup DB work runs sequentially and all sessions/connections are closed
+    # before serving traffic to avoid exhausting Supabase session-mode limits.
     Base.metadata.create_all(bind=engine)
     _ensure_report_columns()
     _ensure_admin()
     _ensure_seed_communities()
+
+
+@app.on_event("shutdown")
+def on_shutdown() -> None:
+    # Release pooled connections cleanly on process shutdown/restart.
+    engine.dispose()
 
 
 # Columns added to the original severity_reports table after its first release.
@@ -118,6 +126,7 @@ def _ensure_admin() -> None:
     db = SessionLocal()
     try:
         if db.query(models.User).filter_by(email=settings.ADMIN_EMAIL.lower()).first():
+            db.rollback()
             return
         admin = models.User(
             name=settings.ADMIN_NAME, email=settings.ADMIN_EMAIL.lower(),
@@ -127,6 +136,9 @@ def _ensure_admin() -> None:
         db.flush()
         db.add(models.UserProfile(user_id=admin.id))
         db.commit()
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
 
@@ -142,10 +154,14 @@ def _ensure_seed_communities() -> None:
     db = SessionLocal()
     try:
         if db.query(models.Community).first():
+            db.rollback()
             return
         for name, desc, cat in defaults:
             db.add(models.Community(name=name, description=desc, category=cat))
         db.commit()
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
 
