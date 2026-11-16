@@ -5,8 +5,8 @@
  * candidates between the two authenticated participants. The backend never sees
  * audio/video content — it only relays JSON signaling envelopes.
  *
- * Privacy: camera and microphone are only activated after the member explicitly
- * accepts the call. The admin's camera is activated when they click "Start Call".
+ * Privacy: camera and microphone are only activated after explicit user action
+ * (caller starts call; callee accepts).
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-import { callWebSocketUrl, updateCallStatus, type VideoCall } from "@/lib/api";
+import { callWebSocketUrl, getIceServers, updateCallStatus, type VideoCall } from "@/lib/api";
 
 // ─── types ────────────────────────────────────────────────────────────────
 
@@ -25,7 +25,7 @@ export interface VideoCallModalProps {
   call: VideoCall;
   role: CallRole;
   onClose: () => void;
-  /** For caller: called after callee accepts so we can start WebRTC. */
+  /** For caller: called after callee accepts so UI/parent can react. */
   onAccepted?: () => void;
 }
 
@@ -35,16 +35,10 @@ type CallPhase =
   | "connected"   // in call
   | "ended";      // finished
 
-// ─── STUN config (public Google servers, no TURN needed for LAN) ──────────
-const ICE_SERVERS: RTCIceServer[] = [
-  { urls: "stun:stun.l.google.com:19302" },
-  { urls: "stun:stun1.l.google.com:19302" },
-];
-
 // ─── component ───────────────────────────────────────────────────────────
 
 export function VideoCallModal({ call, role, onClose, onAccepted }: VideoCallModalProps) {
-  const [phase, setPhase] = useState<CallPhase>(role === "callee" ? "ringing" : "connecting");
+  const [phase, setPhase] = useState<CallPhase>("ringing");
   const [micOn, setMicOn] = useState(true);
   const [camOn, setCamOn] = useState(true);
   const [elapsed, setElapsed] = useState(0);
@@ -60,35 +54,72 @@ export function VideoCallModal({ call, role, onClose, onAccepted }: VideoCallMod
   const wsRef = useRef<WebSocket | null>(null);
   const ringTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const callTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const connectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const offerRetryRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
+  const mediaReadyRef = useRef(false);
+  const acceptedRef = useRef(false);
+  const offerSentRef = useRef(false);
+  const callActiveRef = useRef(true);
   const missedSentRef = useRef(false);
+  const cleanedUpRef = useRef(false);
 
   const otherName = role === "caller" ? call.callee_name : call.caller_name;
+  const logPrefix = `[webrtc][${role}][call:${call.id}]`;
+  const dlog = (...args: unknown[]) => console.log(logPrefix, ...args);
+  const dwarn = (...args: unknown[]) => console.warn(logPrefix, ...args);
+  const derr = (...args: unknown[]) => console.error(logPrefix, ...args);
+
+  // ── helpers ──────────────────────────────────────────────────────────
+
+  const sendSignal = useCallback((type: string, payload?: unknown) => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      dwarn("signaling send skipped (socket not open)", { type, readyState: ws?.readyState });
+      return false;
+    }
+    const msg = { type, call_id: call.id, ...(payload !== undefined ? { payload } : {}) };
+    dlog("signaling send", { type, hasPayload: payload !== undefined });
+    ws.send(JSON.stringify(msg));
+    return true;
+  }, [call.id]);
 
   // ── cleanup ──────────────────────────────────────────────────────────
 
   const cleanup = useCallback(() => {
+    if (cleanedUpRef.current) return;
+    cleanedUpRef.current = true;
+    callActiveRef.current = false;
+    dlog("cleanup");
     if (ringTimerRef.current) clearInterval(ringTimerRef.current);
     if (callTimerRef.current) clearInterval(callTimerRef.current);
-    wsRef.current?.close();
+    if (offerRetryRef.current) clearInterval(offerRetryRef.current);
+    if (connectTimeoutRef.current) clearTimeout(connectTimeoutRef.current);
+    try { wsRef.current?.close(); } catch { /* ignore */ }
     wsRef.current = null;
     localStreamRef.current?.getTracks().forEach(t => t.stop());
     localStreamRef.current = null;
-    pcRef.current?.close();
+    try { pcRef.current?.close(); } catch { /* ignore */ }
     pcRef.current = null;
   }, []);
 
   // ── end call ─────────────────────────────────────────────────────────
 
   const endCall = useCallback(async (reason: VideoCall["status"] = "ended") => {
+    if (!callActiveRef.current && cleanedUpRef.current) return;
+    dlog("endCall", { reason });
+    callActiveRef.current = false;
     cleanup();
     setPhase("ended");
     try {
       await updateCallStatus(call.id, reason);
-    } catch { /* ignore — call may already be ended server-side */ }
+    } catch (e) {
+      dwarn("updateCallStatus failed (may already be ended)", e);
+    }
     setTimeout(onClose, 1200);
   }, [call.id, cleanup, onClose]);
 
-  // ── ring timeout (30 s) for callee ringing state ──────────────────────
+  // ── ring timeout (30 s) ──────────────────────────────────────────────
 
   useEffect(() => {
     if (phase !== "ringing") return;
@@ -97,7 +128,8 @@ export function VideoCallModal({ call, role, onClose, onAccepted }: VideoCallMod
         if (s >= 30) {
           if (!missedSentRef.current) {
             missedSentRef.current = true;
-            endCall("missed");
+            // Caller: stop waiting and mark missed/ended; callee: missed
+            endCall(role === "callee" ? "missed" : "ended");
           }
           return s;
         }
@@ -105,7 +137,7 @@ export function VideoCallModal({ call, role, onClose, onAccepted }: VideoCallMod
       });
     }, 1000);
     return () => { if (ringTimerRef.current) clearInterval(ringTimerRef.current); };
-  }, [phase, endCall]);
+  }, [phase, endCall, role]);
 
   // ── call duration timer ───────────────────────────────────────────────
 
@@ -115,109 +147,269 @@ export function VideoCallModal({ call, role, onClose, onAccepted }: VideoCallMod
     return () => { if (callTimerRef.current) clearInterval(callTimerRef.current); };
   }, [phase]);
 
+  // ── negotiation helpers ──────────────────────────────────────────────
+
+  const flushPendingCandidates = useCallback(async () => {
+    const pc = pcRef.current;
+    if (!pc || !pc.remoteDescription) return;
+    const queued = pendingCandidatesRef.current.splice(0);
+    for (const cand of queued) {
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(cand));
+        dlog("ICE candidate added (flushed)", { sdpMid: cand.sdpMid });
+      } catch (e) {
+        dwarn("Failed to add flushed ICE candidate", e);
+      }
+    }
+  }, []);
+
+  const sendOffer = useCallback(async (reason: string) => {
+    const pc = pcRef.current;
+    const ws = wsRef.current;
+    if (!pc || !ws || ws.readyState !== WebSocket.OPEN) {
+      dwarn("sendOffer skipped: pc/ws not ready", { reason, hasPc: !!pc, wsState: ws?.readyState });
+      return;
+    }
+    if (!mediaReadyRef.current) {
+      dwarn("sendOffer skipped: media not ready", { reason });
+      return;
+    }
+    // Avoid duplicate offers once negotiation is progressing/answered.
+    if (pc.signalingState !== "stable" && offerSentRef.current) {
+      dlog("sendOffer skipped: signaling not stable", { reason, state: pc.signalingState });
+      return;
+    }
+    if (pc.remoteDescription?.type === "answer") {
+      dlog("sendOffer skipped: answer already set", { reason });
+      return;
+    }
+    try {
+      dlog("creating offer", { reason, signalingState: pc.signalingState });
+      const offer = await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
+      await pc.setLocalDescription(offer);
+      offerSentRef.current = true;
+      const ok = sendSignal("offer", { sdp: offer.sdp, type: offer.type });
+      dlog("offer sent", { ok, sdpLen: offer.sdp?.length ?? 0 });
+    } catch (e) {
+      derr("failed to create/send offer", e);
+      toast.error("Failed to start call negotiation.");
+    }
+  }, [sendSignal]);
+
   // ── WebSocket + WebRTC setup ──────────────────────────────────────────
 
   const initWebRTC = useCallback(async (isCaller: boolean) => {
+    if (pcRef.current || wsRef.current || cleanedUpRef.current) return;
+    dlog("initWebRTC start", { isCaller, configuredBase: !!callWebSocketUrl() });
     // 1. Get local media
     let stream: MediaStream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-    } catch {
+      dlog("media stream acquired", { tracks: stream.getTracks().map(t => ({ kind: t.kind, enabled: t.enabled, readyState: t.readyState })) });
+    } catch (e) {
+      derr("getUserMedia failed", e);
       toast.error("Camera/microphone access denied. Please allow access and try again.");
       await endCall("failed");
       return;
     }
     localStreamRef.current = stream;
+    mediaReadyRef.current = true;
     if (localVideoRef.current) {
       localVideoRef.current.srcObject = stream;
     }
 
     // 2. Build peer connection
-    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    const iceServers = getIceServers();
+    dlog("ICE servers", iceServers.map(s => (Array.isArray(s.urls) ? s.urls : [s.urls]).join(",")));
+    const pc = new RTCPeerConnection({ iceServers });
     pcRef.current = pc;
 
     stream.getTracks().forEach(track => pc.addTrack(track, stream));
 
     pc.ontrack = (event) => {
+      dlog("remote track received", { kind: event.track.kind, streams: event.streams.length, readyState: event.track.readyState });
       if (remoteVideoRef.current && event.streams[0]) {
         remoteVideoRef.current.srcObject = event.streams[0];
-        setPhase("connected");
+        if (callActiveRef.current) setPhase("connected");
       }
     };
 
     pc.onicecandidate = (event) => {
-      if (event.candidate && wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({
-          type: "ice-candidate",
-          call_id: call.id,
-          payload: event.candidate.toJSON(),
-        }));
+      if (event.candidate) {
+        dlog("local ICE candidate", { type: event.candidate.type, protocol: event.candidate.protocol, sdpMid: event.candidate.sdpMid });
+        sendSignal("ice-candidate", event.candidate.toJSON());
+      } else {
+        dlog("ICE gathering complete");
+      }
+    };
+
+    pc.oniceconnectionstatechange = () => {
+      dlog("iceConnectionState", pc.iceConnectionState);
+      if (pc.iceConnectionState === "failed") {
+        toast.error("Connection failed (ICE). A TURN server may be required on different networks.");
+        endCall("failed");
+      } else if (pc.iceConnectionState === "disconnected") {
+        // brief disconnects can recover; give it time
+        dwarn("ICE disconnected, waiting for recovery...");
+        setTimeout(() => {
+          if (pcRef.current === pc && pc.iceConnectionState === "disconnected") {
+            endCall("failed");
+          }
+        }, 10000);
       }
     };
 
     pc.onconnectionstatechange = () => {
-      if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
+      dlog("connectionState", pc.connectionState);
+      if (pc.connectionState === "failed") {
+        toast.error("Call connection failed.");
         endCall("failed");
+      } else if (pc.connectionState === "disconnected" || pc.connectionState === "closed") {
+        if (callActiveRef.current) endCall("ended");
       }
     };
 
+    pc.onicegatheringstatechange = () => dlog("iceGatheringState", pc.iceGatheringState);
+    pc.onsignalingstatechange = () => dlog("signalingState", pc.signalingState);
+
     // 3. Open signaling WebSocket
-    const ws = new WebSocket(callWebSocketUrl());
+    const wsUrl = callWebSocketUrl();
+    dlog("opening signaling websocket", { scheme: wsUrl.startsWith("wss") ? "wss" : wsUrl.startsWith("ws") ? "ws" : "other" });
+    const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
-    ws.onopen = async () => {
+    // Caller: if already accepted (edge case) or once accepted, start offer with retries
+    const startCallerNegotiation = () => {
+      if (!isCaller || !acceptedRef.current) return;
+      dlog("caller negotiation start");
+      setPhase("connecting");
+      void sendOffer("call_accepted");
+      if (!offerRetryRef.current) {
+        offerRetryRef.current = setInterval(() => {
+          const curPc = pcRef.current;
+          if (!curPc || curPc.remoteDescription?.type === "answer" || !callActiveRef.current) {
+            if (offerRetryRef.current) clearInterval(offerRetryRef.current);
+            offerRetryRef.current = null;
+            return;
+          }
+          void sendOffer("retry");
+        }, 3000);
+      }
+      if (!connectTimeoutRef.current) {
+        connectTimeoutRef.current = setTimeout(() => {
+          const curPc = pcRef.current;
+          if (callActiveRef.current && curPc && curPc.connectionState !== "connected") {
+            derr("connection timeout", { connectionState: curPc.connectionState, ice: curPc.iceConnectionState });
+            toast.error("Could not connect. Check network/TURN configuration and try again.");
+            endCall("failed");
+          }
+        }, 35000);
+      }
+    };
+
+    ws.onopen = () => {
+      dlog("signaling websocket open");
+      // let peer know we're ready (harmless if backend ignores/acks)
+      sendSignal("ping");
       if (isCaller) {
-        // Caller creates offer first
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        ws.send(JSON.stringify({
-          type: "offer",
-          call_id: call.id,
-          payload: { sdp: offer.sdp, type: offer.type },
-        }));
+        // Wait for callee acceptance before sending offer to avoid dropped early offers.
+        if (acceptedRef.current) startCallerNegotiation();
       }
     };
 
     ws.onmessage = async (event) => {
       let msg: Record<string, unknown>;
-      try { msg = JSON.parse(event.data); } catch { return; }
+      try { msg = JSON.parse(event.data); } catch { dwarn("invalid signaling JSON"); return; }
 
       const type = msg.type as string;
       const payload = msg.payload as Record<string, unknown> | null;
+      dlog("signaling recv", { type, delivered: msg.delivered, msgType: msg.msg_type });
 
-      if (type === "offer" && !isCaller) {
-        // Callee received offer → set remote, create answer
-        await pc.setRemoteDescription(new RTCSessionDescription(payload as RTCSessionDescriptionInit));
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        ws.send(JSON.stringify({
-          type: "answer",
-          call_id: call.id,
-          payload: { sdp: answer.sdp, type: answer.type },
-        }));
-      } else if (type === "answer" && isCaller) {
-        await pc.setRemoteDescription(new RTCSessionDescription(payload as RTCSessionDescriptionInit));
+      if (type === "offer" && !isCaller && payload) {
+        try {
+          dlog("received offer", { sdpLen: (payload.sdp as string | undefined)?.length ?? 0 });
+          setPhase("connecting");
+          await pc.setRemoteDescription(new RTCSessionDescription(payload as RTCSessionDescriptionInit));
+          await flushPendingCandidates();
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          sendSignal("answer", { sdp: answer.sdp, type: answer.type });
+          dlog("answer sent", { sdpLen: answer.sdp?.length ?? 0 });
+        } catch (e) {
+          derr("failed handling offer", e);
+          toast.error("Failed to process call offer.");
+          endCall("failed");
+        }
+      } else if (type === "answer" && isCaller && payload) {
+        try {
+          dlog("received answer", { sdpLen: (payload.sdp as string | undefined)?.length ?? 0 });
+          if (pc.signalingState === "have-local-offer" || !pc.remoteDescription) {
+            await pc.setRemoteDescription(new RTCSessionDescription(payload as RTCSessionDescriptionInit));
+            await flushPendingCandidates();
+            if (offerRetryRef.current) { clearInterval(offerRetryRef.current); offerRetryRef.current = null; }
+          } else {
+            dlog("ignored answer in state", pc.signalingState);
+          }
+        } catch (e) {
+          derr("failed handling answer", e);
+        }
       } else if (type === "ice-candidate" && payload) {
-        try { await pc.addIceCandidate(new RTCIceCandidate(payload as RTCIceCandidateInit)); } catch { /* ignore */ }
+        try {
+          if (pc.remoteDescription) {
+            await pc.addIceCandidate(new RTCIceCandidate(payload as RTCIceCandidateInit));
+            dlog("remote ICE candidate added");
+          } else {
+            pendingCandidatesRef.current.push(payload as RTCIceCandidateInit);
+            dlog("remote ICE candidate queued (no remoteDescription yet)", { queued: pendingCandidatesRef.current.length });
+          }
+        } catch (e) {
+          dwarn("failed to add remote ICE candidate", e);
+        }
+      } else if (type === "call_accepted") {
+        dlog("call accepted by peer");
+        if (ringTimerRef.current) { clearInterval(ringTimerRef.current); ringTimerRef.current = null; }
+        acceptedRef.current = true;
+        onAccepted?.();
+        if (isCaller) startCallerNegotiation();
       } else if (type === "call_ended" || type === "call_declined") {
-        await endCall("ended");
+        dlog("call ended/declined by peer", type);
+        if (callActiveRef.current) await endCall("ended");
+      } else if (type === "ack") {
+        if (msg.msg_type === "offer" || msg.msg_type === "answer" || msg.msg_type === "ice-candidate") {
+          dlog("relay ack", { msgType: msg.msg_type, delivered: msg.delivered });
+          if (msg.delivered === false && msg.msg_type === "ice-candidate") {
+            dwarn("ICE candidate not delivered (peer socket may not be ready)");
+          }
+        }
+      } else if (type === "error") {
+        dwarn("signaling error", msg.detail);
       }
     };
 
-    ws.onerror = () => { toast.error("Signaling connection error."); };
-    ws.onclose = () => { /* handled by endCall if needed */ };
-  }, [call.id, endCall]);
+    ws.onerror = (e) => {
+      derr("signaling websocket error", e);
+      if (callActiveRef.current && phase !== "ended") {
+        toast.error("Signaling connection error.");
+      }
+    };
+    ws.onclose = (e) => {
+      dlog("signaling websocket closed", { code: e.code, reason: e.reason });
+    };
+  }, [call.id, endCall, flushPendingCandidates, onAccepted, sendOffer, sendSignal]);
 
   // ── callee: accept ────────────────────────────────────────────────────
 
   const acceptCall = useCallback(async () => {
-    if (ringTimerRef.current) clearInterval(ringTimerRef.current);
+    if (ringTimerRef.current) { clearInterval(ringTimerRef.current); ringTimerRef.current = null; }
     setPhase("connecting");
+    acceptedRef.current = true;
+    dlog("callee accepting call");
     try {
       await updateCallStatus(call.id, "accepted");
       onAccepted?.();
       await initWebRTC(false); // callee = not caller
     } catch (e) {
+      derr("failed to accept call", e);
       toast.error(e instanceof Error ? e.message : "Failed to accept call");
       await endCall("failed");
     }
@@ -226,20 +418,24 @@ export function VideoCallModal({ call, role, onClose, onAccepted }: VideoCallMod
   // ── callee: decline ───────────────────────────────────────────────────
 
   const declineCall = useCallback(async () => {
+    dlog("callee declining call");
+    callActiveRef.current = false;
     cleanup();
     setPhase("ended");
-    await updateCallStatus(call.id, "declined");
+    try { await updateCallStatus(call.id, "declined"); } catch { /* ignore */ }
     setTimeout(onClose, 800);
   }, [call.id, cleanup, onClose]);
 
-  // ── caller: start WebRTC when call is in ringing/accepted state ───────
+  // ── caller: init (media + signaling) and wait for acceptance ─────────
 
   useEffect(() => {
-    if (role === "caller" && phase === "connecting") {
-      initWebRTC(true);
+    if (role === "caller") {
+      dlog("caller mounted: preparing media/signaling and waiting for acceptance");
+      // Acquire media and signaling immediately, but send offer only after call_accepted.
+      void initWebRTC(true);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // only on mount for caller
+  }, []); // only on mount
 
   // ── mic/cam toggles ───────────────────────────────────────────────────
 
@@ -255,7 +451,13 @@ export function VideoCallModal({ call, role, onClose, onAccepted }: VideoCallMod
 
   // ── cleanup on unmount ────────────────────────────────────────────────
 
-  useEffect(() => () => { cleanup(); }, [cleanup]);
+  useEffect(() => () => {
+    callActiveRef.current = false;
+    // best-effort end if still active; cleanup always
+    if (!cleanedUpRef.current) {
+      cleanup();
+    }
+  }, [cleanup]);
 
   // ── helpers ───────────────────────────────────────────────────────────
 

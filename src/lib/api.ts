@@ -1,10 +1,19 @@
 // Minimal API layer for the FastAPI backend.
-// Base URL comes from VITE_API_BASE_URL (defaults to local backend).
+// Base URL comes from VITE_API_BASE_URL. In local development only, falls back
+// to the default local backend; deployed builds must set VITE_API_BASE_URL.
 // Auth token (JWT) is stored in localStorage under "innerbloom_token".
 
+const env = import.meta.env as { VITE_API_BASE_URL?: string; DEV?: boolean };
+const configuredBase = env.VITE_API_BASE_URL?.trim().replace(/\/+$/, "");
 const BASE: string =
-  (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_API_BASE_URL ??
-  "http://localhost:8000";
+  configuredBase || (env.DEV ? "http://localhost:8000" : "");
+
+if (!BASE && !env.DEV) {
+  // Helps diagnose missing Vercel env (VITE_* vars are baked in at build time).
+  console.error(
+    "VITE_API_BASE_URL is not set. Configure it in your deployment environment and rebuild the frontend."
+  );
+}
 
 const TOKEN_KEY = "innerbloom_token";
 
@@ -639,6 +648,38 @@ export function callWebSocketUrl(): string {
   const token = getToken() ?? "";
   const wsBase = BASE.replace(/^http/, "ws");
   return `${wsBase}/ws/call?token=${encodeURIComponent(token)}`;
+}
+
+function parseIceServers(raw: string | undefined): RTCIceServer[] {
+  if (!raw?.trim()) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((s): s is RTCIceServer => !!s && typeof s === "object" && "urls" in s);
+  } catch {
+    console.warn("[webrtc] Failed to parse VITE_WEBRTC_ICE_SERVERS; expected JSON array");
+    return [];
+  }
+}
+
+export function getIceServers(): RTCIceServer[] {
+  const defaults: RTCIceServer[] = [
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:stun1.l.google.com:19302" },
+  ];
+  const env = import.meta.env as {
+    VITE_WEBRTC_ICE_SERVERS?: string;
+    VITE_TURN_URLS?: string;
+    VITE_TURN_USERNAME?: string;
+    VITE_TURN_CREDENTIAL?: string;
+  };
+  const fromJson = parseIceServers(env.VITE_WEBRTC_ICE_SERVERS);
+  if (fromJson.length > 0) return fromJson;
+  const turnUrls = env.VITE_TURN_URLS?.split(",").map(s => s.trim()).filter(Boolean);
+  if (turnUrls && turnUrls.length > 0 && env.VITE_TURN_USERNAME && env.VITE_TURN_CREDENTIAL) {
+    return [...defaults, { urls: turnUrls, username: env.VITE_TURN_USERNAME, credential: env.VITE_TURN_CREDENTIAL }];
+  }
+  return defaults;
 }
 
 export { BASE as API_BASE_URL };
