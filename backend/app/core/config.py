@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     AI_TEMPERATURE: float = 0.7
     AI_TIMEOUT_SECONDS: float = 30.0
 
+    # WebRTC ICE servers for video calls (JSON array). Store STUN/TURN config
+    # (including TURN credentials) server-side and serve via authenticated API.
+    WEBRTC_ICE_SERVERS: str = ""
+
     @property
     def ai_configured(self) -> bool:
         return bool(self.GROQ_API_KEY.strip())

@@ -253,7 +253,7 @@ export function VideoCallModal({ call, role, onClose, onAccepted }: VideoCallMod
     }
 
     // 2. Build peer connection
-    const iceServers = getIceServers();
+    const iceServers = await getIceServers();
     dlog("ICE servers", iceServers.map(s => (Array.isArray(s.urls) ? s.urls : [s.urls]).join(",")));
     const pc = new RTCPeerConnection({ iceServers });
     pcRef.current = pc;

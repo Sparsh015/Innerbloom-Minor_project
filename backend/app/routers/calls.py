@@ -16,12 +16,15 @@ Privacy guarantees:
 """
 from __future__ import annotations
 
+import json
+import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from sqlalchemy.orm import Session
 
 from app import schemas
+from app.core.config import get_settings
 from app.core.dependencies import get_current_user, require_admin
 from app.core.security import decode_token
 from app.db import models
@@ -30,6 +33,13 @@ from app.services.notification_service import create_notification
 from app.websocket.manager import manager
 
 router = APIRouter(tags=["calls"])
+logger = logging.getLogger(__name__)
+settings = get_settings()
+
+DEFAULT_ICE_SERVERS = [
+    {"urls": "stun:stun.l.google.com:19302"},
+    {"urls": "stun:stun1.l.google.com:19302"},
+]
 
 RING_TIMEOUT_SECONDS = 30  # configurable default
 
@@ -221,6 +231,50 @@ def admin_call_history(
             .order_by(models.VideoCall.started_at.desc())
             .limit(limit).all())
     return [_call_out(r, db) for r in rows]
+
+
+# ── ICE configuration (authenticated) ────────────────────────────────────
+
+def _load_ice_servers() -> list[dict]:
+    raw = (settings.WEBRTC_ICE_SERVERS or "").strip()
+    if not raw:
+        logger.info("[calls] WEBRTC_ICE_SERVERS not configured; using default STUN servers")
+        return list(DEFAULT_ICE_SERVERS)
+    try:
+        parsed = json.loads(raw)
+    except Exception as e:
+        logger.warning("[calls] Invalid WEBRTC_ICE_SERVERS JSON; falling back to defaults: %s", e)
+        return list(DEFAULT_ICE_SERVERS)
+    if not isinstance(parsed, list):
+        logger.warning("[calls] WEBRTC_ICE_SERVERS must be a JSON array; falling back to defaults")
+        return list(DEFAULT_ICE_SERVERS)
+    servers: list[dict] = []
+    for item in parsed:
+        if not isinstance(item, dict) or "urls" not in item:
+            continue
+        server: dict = {"urls": item["urls"]}
+        # Include TURN credentials only when present; never log them.
+        if item.get("username") is not None:
+            server["username"] = item["username"]
+        if item.get("credential") is not None:
+            server["credential"] = item["credential"]
+        servers.append(server)
+    if not servers:
+        logger.warning("[calls] WEBRTC_ICE_SERVERS contained no valid entries; falling back to defaults")
+        return list(DEFAULT_ICE_SERVERS)
+    has_turn = any(
+        any(u.startswith(("turn:", "turns:")) for u in (s["urls"] if isinstance(s["urls"], list) else [s["urls"]]))
+        for s in servers
+    )
+    logger.info("[calls] Serving ICE config: %d servers, turn_configured=%s", len(servers), has_turn)
+    return servers
+
+
+@router.get("/api/calls/ice-config", summary="Get WebRTC ICE server configuration")
+def get_ice_config(current: models.User = Depends(get_current_user)):
+    # Authenticated users (caller/callee participants) fetch ICE config before creating RTCPeerConnection.
+    # Credentials are delivered only to authorized clients over HTTPS; not exposed in frontend source.
+    return {"iceServers": _load_ice_servers()}
 
 
 # ── WebRTC signaling WebSocket ────────────────────────────────────────────

@@ -650,36 +650,33 @@ export function callWebSocketUrl(): string {
   return `${wsBase}/ws/call?token=${encodeURIComponent(token)}`;
 }
 
-function parseIceServers(raw: string | undefined): RTCIceServer[] {
-  if (!raw?.trim()) return [];
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((s): s is RTCIceServer => !!s && typeof s === "object" && "urls" in s);
-  } catch {
-    console.warn("[webrtc] Failed to parse VITE_WEBRTC_ICE_SERVERS; expected JSON array");
-    return [];
-  }
+export const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
+  { urls: "stun:stun.l.google.com:19302" },
+  { urls: "stun:stun1.l.google.com:19302" },
+];
+
+function normalizeIceServers(raw: unknown): RTCIceServer[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((s): s is RTCIceServer => !!s && typeof s === "object" && "urls" in s);
 }
 
-export function getIceServers(): RTCIceServer[] {
-  const defaults: RTCIceServer[] = [
-    { urls: "stun:stun.l.google.com:19302" },
-    { urls: "stun:stun1.l.google.com:19302" },
-  ];
-  const env = import.meta.env as {
-    VITE_WEBRTC_ICE_SERVERS?: string;
-    VITE_TURN_URLS?: string;
-    VITE_TURN_USERNAME?: string;
-    VITE_TURN_CREDENTIAL?: string;
-  };
-  const fromJson = parseIceServers(env.VITE_WEBRTC_ICE_SERVERS);
-  if (fromJson.length > 0) return fromJson;
-  const turnUrls = env.VITE_TURN_URLS?.split(",").map(s => s.trim()).filter(Boolean);
-  if (turnUrls && turnUrls.length > 0 && env.VITE_TURN_USERNAME && env.VITE_TURN_CREDENTIAL) {
-    return [...defaults, { urls: turnUrls, username: env.VITE_TURN_USERNAME, credential: env.VITE_TURN_CREDENTIAL }];
+export async function getIceServers(): Promise<RTCIceServer[]> {
+  try {
+    const data = await api<{ iceServers?: unknown }>("/api/calls/ice-config");
+    const servers = normalizeIceServers(data?.iceServers);
+    if (servers.length === 0) {
+      console.warn("[webrtc] ICE config response missing/invalid; falling back to default STUN");
+      return DEFAULT_ICE_SERVERS;
+    }
+    const hasTurn = servers.some(s =>
+      (Array.isArray(s.urls) ? s.urls : [s.urls]).some(u => String(u).startsWith("turn:") || String(u).startsWith("turns:"))
+    );
+    console.log("[webrtc] ICE config loaded", { servers: servers.length, hasTurn });
+    return servers;
+  } catch (e) {
+    console.warn("[webrtc] Failed to fetch ICE config from backend; falling back to default STUN", e);
+    return DEFAULT_ICE_SERVERS;
   }
-  return defaults;
 }
 
 export { BASE as API_BASE_URL };
