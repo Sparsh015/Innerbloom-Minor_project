@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-import { callWebSocketUrl, getIceServers, updateCallStatus, type VideoCall } from "@/lib/api";
+import { callHistory, callWebSocketUrl, getIceServers, updateCallStatus, type VideoCall } from "@/lib/api";
 
 // ─── types ────────────────────────────────────────────────────────────────
 
@@ -43,6 +43,7 @@ export function VideoCallModal({ call, role, onClose, onAccepted }: VideoCallMod
   const [camOn, setCamOn] = useState(true);
   const [elapsed, setElapsed] = useState(0);
   const [ringElapsed, setRingElapsed] = useState(0);
+  const [callerAccepted, setCallerAccepted] = useState(false);
 
   // DOM refs
   const localVideoRef = useRef<HTMLVideoElement>(null);
@@ -139,6 +140,39 @@ export function VideoCallModal({ call, role, onClose, onAccepted }: VideoCallMod
     return () => { if (ringTimerRef.current) clearInterval(ringTimerRef.current); };
   }, [phase, endCall, role]);
 
+  // ── caller: poll for acceptance (fallback if WS signal is missed/racy) ─
+
+  useEffect(() => {
+    if (role !== "caller") return;
+    let cancelled = false;
+    const poll = async () => {
+      if (cancelled || acceptedRef.current || !callActiveRef.current) return;
+      try {
+        const calls = await callHistory(20);
+        const current = calls.find(c => c.id === call.id);
+        if (!current) return;
+        dlog("caller poll status", current.status);
+        if (current.status === "accepted") {
+          if (ringTimerRef.current) { clearInterval(ringTimerRef.current); ringTimerRef.current = null; }
+          if (!acceptedRef.current) {
+            acceptedRef.current = true;
+            setCallerAccepted(true);
+            setPhase("connecting");
+            onAccepted?.();
+            dlog("acceptance detected via poll fallback");
+          }
+        } else if (["declined", "missed", "ended", "failed"].includes(current.status)) {
+          if (callActiveRef.current) await endCall(current.status as VideoCall["status"]);
+        }
+      } catch (e) {
+        dwarn("caller poll failed", e);
+      }
+    };
+    void poll();
+    const id = setInterval(poll, 2000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [call.id, endCall, onAccepted, role]);
+
   // ── call duration timer ───────────────────────────────────────────────
 
   useEffect(() => {
@@ -228,8 +262,10 @@ export function VideoCallModal({ call, role, onClose, onAccepted }: VideoCallMod
 
     pc.ontrack = (event) => {
       dlog("remote track received", { kind: event.track.kind, streams: event.streams.length, readyState: event.track.readyState });
-      if (remoteVideoRef.current && event.streams[0]) {
-        remoteVideoRef.current.srcObject = event.streams[0];
+      if (remoteVideoRef.current) {
+        const inbound = event.streams[0] ?? new MediaStream([event.track]);
+        remoteVideoRef.current.srcObject = inbound;
+        remoteVideoRef.current.play().catch((e) => dwarn("remote video play failed", e));
         if (callActiveRef.current) setPhase("connected");
       }
     };
@@ -299,7 +335,7 @@ export function VideoCallModal({ call, role, onClose, onAccepted }: VideoCallMod
         connectTimeoutRef.current = setTimeout(() => {
           const curPc = pcRef.current;
           if (callActiveRef.current && curPc && curPc.connectionState !== "connected") {
-            derr("connection timeout", { connectionState: curPc.connectionState, ice: curPc.iceConnectionState });
+            derr("connection timeout", { connectionState: curPc.connectionState, ice: curPc.iceConnectionState, signaling: curPc.signalingState });
             toast.error("Could not connect. Check network/TURN configuration and try again.");
             endCall("failed");
           }
@@ -312,8 +348,16 @@ export function VideoCallModal({ call, role, onClose, onAccepted }: VideoCallMod
       // let peer know we're ready (harmless if backend ignores/acks)
       sendSignal("ping");
       if (isCaller) {
-        // Wait for callee acceptance before sending offer to avoid dropped early offers.
-        if (acceptedRef.current) startCallerNegotiation();
+        // Wait for callee acceptance before sending offer. Use a short poll-to-start
+        // loop in case acceptance was detected via REST while socket/media was pending.
+        const kick = setInterval(() => {
+          if (!callActiveRef.current) { clearInterval(kick); return; }
+          if (acceptedRef.current) {
+            clearInterval(kick);
+            startCallerNegotiation();
+          }
+        }, 250);
+        setTimeout(() => clearInterval(kick), 45000);
       }
     };
 
@@ -369,18 +413,23 @@ export function VideoCallModal({ call, role, onClose, onAccepted }: VideoCallMod
         dlog("call accepted by peer");
         if (ringTimerRef.current) { clearInterval(ringTimerRef.current); ringTimerRef.current = null; }
         acceptedRef.current = true;
+        setCallerAccepted(true);
+        setPhase("connecting");
         onAccepted?.();
         if (isCaller) startCallerNegotiation();
       } else if (type === "call_ended" || type === "call_declined") {
         dlog("call ended/declined by peer", type);
         if (callActiveRef.current) await endCall("ended");
-      } else if (type === "ack") {
-        if (msg.msg_type === "offer" || msg.msg_type === "answer" || msg.msg_type === "ice-candidate") {
-          dlog("relay ack", { msgType: msg.msg_type, delivered: msg.delivered });
-          if (msg.delivered === false && msg.msg_type === "ice-candidate") {
-            dwarn("ICE candidate not delivered (peer socket may not be ready)");
-          }
-        }
+          } else if (type === "ack") {
+            if (msg.msg_type === "offer" || msg.msg_type === "answer" || msg.msg_type === "ice-candidate") {
+              dlog("relay ack", { msgType: msg.msg_type, delivered: msg.delivered });
+              if (msg.delivered === false) {
+                dwarn("signaling message not delivered to peer", { msgType: msg.msg_type });
+                if (msg.msg_type === "offer" && isCaller) {
+                  // peer socket may not be ready yet; retry will handle, but log clearly
+                }
+              }
+            }
       } else if (type === "error") {
         dwarn("signaling error", msg.detail);
       }
@@ -396,6 +445,42 @@ export function VideoCallModal({ call, role, onClose, onAccepted }: VideoCallMod
       dlog("signaling websocket closed", { code: e.code, reason: e.reason });
     };
   }, [call.id, endCall, flushPendingCandidates, onAccepted, sendOffer, sendSignal]);
+
+  // Caller: if acceptance detected (WS or REST poll fallback) while sockets/media
+  // were coming up, ensure negotiation starts once ready. This also recovers when
+  // the backend's call_accepted push was missed due to caller socket timing.
+  useEffect(() => {
+    if (role !== "caller" || !callerAccepted) return;
+    const ensureNegotiation = () => {
+      if (!callActiveRef.current || !acceptedRef.current) return;
+      if (wsRef.current?.readyState !== WebSocket.OPEN || !mediaReadyRef.current) return;
+      dlog("ensuring caller negotiation", { ws: wsRef.current?.readyState, media: mediaReadyRef.current });
+      void sendOffer("callerAccepted");
+      if (!offerRetryRef.current) {
+        offerRetryRef.current = setInterval(() => {
+          const curPc = pcRef.current;
+          if (!curPc || curPc.remoteDescription?.type === "answer" || !callActiveRef.current) {
+            if (offerRetryRef.current) { clearInterval(offerRetryRef.current); offerRetryRef.current = null; }
+            return;
+          }
+          void sendOffer("retry");
+        }, 3000);
+      }
+      if (!connectTimeoutRef.current) {
+        connectTimeoutRef.current = setTimeout(() => {
+          const curPc = pcRef.current;
+          if (callActiveRef.current && curPc && curPc.connectionState !== "connected") {
+            derr("connection timeout", { connectionState: curPc.connectionState, ice: curPc.iceConnectionState, signaling: curPc.signalingState, hasRemote: !!curPc.remoteDescription });
+            toast.error("Could not connect. Check network/TURN configuration and try again.");
+            endCall("failed");
+          }
+        }, 35000);
+      }
+    };
+    ensureNegotiation();
+    const t = setInterval(ensureNegotiation, 500);
+    return () => clearInterval(t);
+  }, [callerAccepted, endCall, role, sendOffer]);
 
   // ── callee: accept ────────────────────────────────────────────────────
 

@@ -136,11 +136,15 @@ async def update_call_status(
         call.status = "accepted"
         call.answered_at = now
         # Notify caller that call was accepted
-        await manager.send_to(call.caller_id, {
+        delivered = await manager.send_to(call.caller_id, {
             "type": "call_accepted",
             "call_id": call_id,
             "callee_id": call.callee_id,
         })
+        try:
+            print(f"[calls] call_accepted call={call_id} to_caller={call.caller_id} delivered={delivered}")
+        except Exception:
+            pass
 
     elif new_status == "declined":
         call.status = "declined"
@@ -288,6 +292,10 @@ async def call_signal_socket(websocket: WebSocket, token: str = ""):
                     "msg_type": msg_type,
                     "delivered": delivered,
                 })
+                try:
+                    print(f"[ws/call] relay call={call_id} type={msg_type} from={user_id} to={other_id} delivered={delivered} status={call.status}")
+                except Exception:
+                    pass
 
         except WebSocketDisconnect:
             pass
